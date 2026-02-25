@@ -57,11 +57,11 @@ impl log::Log for FilteredLogger {
     }
 
     fn log(&self, record: &Record) {
-        if self.enabled(record.metadata()) {
-            if let Ok(mut output) = self.output.lock() {
-                let message = format!("{}\n", record.args());
-                let _ = output.write_all(message.as_bytes());
-            }
+        if self.enabled(record.metadata())
+            && let Ok(mut output) = self.output.lock()
+        {
+            let message = format!("{}\n", record.args());
+            let _ = output.write_all(message.as_bytes());
         }
     }
 

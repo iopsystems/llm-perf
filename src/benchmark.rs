@@ -840,12 +840,12 @@ impl BenchmarkRunner {
 
                     // Calculate and record TPOT (Time per Output Token, excluding first token)
                     // TPOT = (total_duration - TTFT) / (num_output_tokens - 1)
-                    if let Some(ttft) = stream.time_to_first_token() {
-                        if output_tokens > 1 {
-                            let generation_duration = total_duration.saturating_sub(ttft);
-                            let tpot = generation_duration.as_nanos() as u64 / (output_tokens - 1);
-                            Metrics::record_tpot(Duration::from_nanos(tpot));
-                        }
+                    if let Some(ttft) = stream.time_to_first_token()
+                        && output_tokens > 1
+                    {
+                        let generation_duration = total_duration.saturating_sub(ttft);
+                        let tpot = generation_duration.as_nanos() as u64 / (output_tokens - 1);
+                        Metrics::record_tpot(Duration::from_nanos(tpot));
                     }
 
                     Metrics::record_request_complete(RequestStatus::Success);
