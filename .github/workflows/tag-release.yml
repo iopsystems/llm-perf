@@ -61,6 +61,8 @@ jobs:
 
       - name: Bump to next dev version
         if: steps.check_tag.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           # Calculate next dev version (patch bump + alpha.0)
           VERSION="${{ steps.version.outputs.version }}"
@@ -68,13 +70,23 @@ jobs:
           NEXT_DEV="${MAJOR}.${MINOR}.$((PATCH + 1))-alpha.0"
           echo "Bumping to next dev version: $NEXT_DEV"
 
-          # Update Cargo.toml
+          # Create branch, update, and open PR
+          BRANCH="chore/bump-${NEXT_DEV}"
+          git checkout -b "$BRANCH"
+
           cargo release version "$NEXT_DEV" --execute --no-confirm
 
-          # Commit and push
           git add -A
           git commit -m "chore: bump to ${NEXT_DEV} for next development iteration"
-          git push origin main
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "chore: bump to ${NEXT_DEV}" \
+            --body "Automated version bump to ${NEXT_DEV} after release v${VERSION}." \
+            --base main \
+            --head "$BRANCH"
+
+          gh pr merge "$BRANCH" --squash --auto
 
       - name: Summary
         run: |
@@ -84,7 +96,7 @@ jobs:
             echo "Tag v${{ steps.version.outputs.version }} already existed, skipped." >> $GITHUB_STEP_SUMMARY
           else
             echo "- Created tag: v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-            echo "- Bumped to next dev version" >> $GITHUB_STEP_SUMMARY
+            echo "- Opened PR to bump to next dev version" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "The release workflow will now build and publish artifacts." >> $GITHUB_STEP_SUMMARY
           fi
