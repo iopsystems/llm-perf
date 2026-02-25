@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-02-25
+
+### Infrastructure
+
+- Add CI workflow with fmt, clippy, doc, audit, test, and test-release jobs
+- Track Cargo.lock for reproducible builds
+- Update dependencies to resolve security advisories (bytes, slab, time)
+
+### Bug Fixes
+
+- Fix doc examples referencing renamed `Config::from_file` method
+- Apply rustfmt formatting fixes
+
 ## [0.1.2] - 2026-02-25
 
 ### Improvements
