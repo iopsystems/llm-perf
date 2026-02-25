@@ -959,16 +959,6 @@ impl BenchmarkRunner {
             report.throughput.output_tokens_per_second
         );
 
-        println!(
-            "{} TTFT (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
-            timestamp,
-            report.latency.ttft_mean_ms,
-            report.latency.ttft_p50_ms,
-            report.latency.ttft_p90_ms,
-            report.latency.ttft_p95_ms,
-            report.latency.ttft_p99_ms
-        );
-
         if report.latency.tpot_p50_ms > 0.0 {
             println!(
                 "{} TPOT (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
@@ -978,18 +968,6 @@ impl BenchmarkRunner {
                 report.latency.tpot_p90_ms,
                 report.latency.tpot_p95_ms,
                 report.latency.tpot_p99_ms
-            );
-        }
-
-        if report.latency.itl_p50_ms > 0.0 {
-            println!(
-                "{} ITL (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
-                timestamp,
-                report.latency.itl_mean_ms,
-                report.latency.itl_p50_ms,
-                report.latency.itl_p90_ms,
-                report.latency.itl_p95_ms,
-                report.latency.itl_p99_ms
             );
         }
 

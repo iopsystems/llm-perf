@@ -10,8 +10,8 @@ use tokio::time::{Instant, interval_at, timeout};
 use crate::config::Config;
 use crate::metrics::{
     ERRORS_CONNECTION, ERRORS_HTTP_4XX, ERRORS_HTTP_5XX, ERRORS_OTHER, ERRORS_PARSE,
-    INTER_TOKEN_LATENCY, REQUEST_LATENCY, REQUESTS_FAILED, REQUESTS_INFLIGHT, REQUESTS_SENT,
-    REQUESTS_SUCCESS, REQUESTS_TIMEOUT, RUNNING, TOKENS_INPUT, TOKENS_OUTPUT, TPOT, TTFT,
+    REQUEST_LATENCY, REQUESTS_FAILED, REQUESTS_INFLIGHT, REQUESTS_SENT, REQUESTS_SUCCESS,
+    REQUESTS_TIMEOUT, RUNNING, TOKENS_INPUT, TOKENS_OUTPUT, TPOT,
 };
 
 /// Print with timestamp prefix
@@ -42,9 +42,7 @@ struct MetricsSnapshot {
     errors_other: u64,
 
     // Store previous histogram snapshots
-    ttft_histogram: Option<Histogram>,
     tpot_histogram: Option<Histogram>,
-    itl_histogram: Option<Histogram>,
     request_histogram: Option<Histogram>,
 }
 
@@ -62,9 +60,7 @@ impl MetricsSnapshot {
             errors_5xx: ERRORS_HTTP_5XX.value(),
             errors_parse: ERRORS_PARSE.value(),
             errors_other: ERRORS_OTHER.value(),
-            ttft_histogram: TTFT.load(),
             tpot_histogram: TPOT.load(),
-            itl_histogram: INTER_TOKEN_LATENCY.load(),
             request_histogram: REQUEST_LATENCY.load(),
         }
     }
@@ -81,9 +77,7 @@ impl MetricsSnapshot {
         self.errors_5xx = ERRORS_HTTP_5XX.value();
         self.errors_parse = ERRORS_PARSE.value();
         self.errors_other = ERRORS_OTHER.value();
-        self.ttft_histogram = TTFT.load();
         self.tpot_histogram = TPOT.load();
-        self.itl_histogram = INTER_TOKEN_LATENCY.load();
         self.request_histogram = REQUEST_LATENCY.load();
     }
 }
@@ -229,50 +223,8 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         }
 
         // Get current histograms
-        let current_ttft = TTFT.load();
         let current_tpot = TPOT.load();
-        let current_itl = INTER_TOKEN_LATENCY.load();
         let current_request = REQUEST_LATENCY.load();
-
-        // TTFT percentiles for this window (using delta)
-        if let (Some(current), Some(previous)) = (&current_ttft, &previous_snapshot.ttft_histogram)
-        {
-            if let Ok(delta) = current.wrapping_sub(previous)
-                && let Ok(Some(percentiles)) = delta.percentiles(&[50.0, 90.0, 95.0, 99.0])
-                && percentiles.len() >= 4
-            {
-                let ttft_p50_ms = percentiles[0].1.end() / 1_000_000;
-                let ttft_p90_ms = percentiles[1].1.end() / 1_000_000;
-                let ttft_p95_ms = percentiles[2].1.end() / 1_000_000;
-                let ttft_p99_ms = percentiles[3].1.end() / 1_000_000;
-
-                output!(
-                    "TTFT (ms): p50: {} p90: {} p95: {} p99: {}",
-                    ttft_p50_ms,
-                    ttft_p90_ms,
-                    ttft_p95_ms,
-                    ttft_p99_ms
-                );
-            }
-        } else if let Some(current) = &current_ttft {
-            // First window - use absolute values
-            if let Ok(Some(percentiles)) = current.percentiles(&[50.0, 90.0, 95.0, 99.0])
-                && percentiles.len() >= 4
-            {
-                let ttft_p50_ms = percentiles[0].1.end() / 1_000_000;
-                let ttft_p90_ms = percentiles[1].1.end() / 1_000_000;
-                let ttft_p95_ms = percentiles[2].1.end() / 1_000_000;
-                let ttft_p99_ms = percentiles[3].1.end() / 1_000_000;
-
-                output!(
-                    "TTFT (ms): p50: {} p90: {} p95: {} p99: {}",
-                    ttft_p50_ms,
-                    ttft_p90_ms,
-                    ttft_p95_ms,
-                    ttft_p99_ms
-                );
-            }
-        }
 
         // TPOT percentiles for this window (using delta)
         if let (Some(current), Some(previous)) = (&current_tpot, &previous_snapshot.tpot_histogram)
@@ -314,50 +266,6 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
                         tpot_p90_ms,
                         tpot_p95_ms,
                         tpot_p99_ms
-                    );
-                }
-            }
-        }
-
-        // ITL percentiles for this window (using delta)
-        if let (Some(current), Some(previous)) = (&current_itl, &previous_snapshot.itl_histogram) {
-            if let Ok(delta) = current.wrapping_sub(previous)
-                && let Ok(Some(percentiles)) = delta.percentiles(&[50.0, 90.0, 95.0, 99.0])
-                && percentiles.len() >= 4
-            {
-                let itl_p50_ms = percentiles[0].1.end() / 1_000_000;
-                let itl_p90_ms = percentiles[1].1.end() / 1_000_000;
-                let itl_p95_ms = percentiles[2].1.end() / 1_000_000;
-                let itl_p99_ms = percentiles[3].1.end() / 1_000_000;
-
-                if itl_p50_ms > 0 {
-                    // Only show if we have ITL data
-                    output!(
-                        "ITL (ms): p50: {} p90: {} p95: {} p99: {}",
-                        itl_p50_ms,
-                        itl_p90_ms,
-                        itl_p95_ms,
-                        itl_p99_ms
-                    );
-                }
-            }
-        } else if let Some(current) = &current_itl {
-            // First window - use absolute values
-            if let Ok(Some(percentiles)) = current.percentiles(&[50.0, 90.0, 95.0, 99.0])
-                && percentiles.len() >= 4
-            {
-                let itl_p50_ms = percentiles[0].1.end() / 1_000_000;
-                let itl_p90_ms = percentiles[1].1.end() / 1_000_000;
-                let itl_p95_ms = percentiles[2].1.end() / 1_000_000;
-                let itl_p99_ms = percentiles[3].1.end() / 1_000_000;
-
-                if itl_p50_ms > 0 {
-                    output!(
-                        "ITL (ms): p50: {} p90: {} p95: {} p99: {}",
-                        itl_p50_ms,
-                        itl_p90_ms,
-                        itl_p95_ms,
-                        itl_p99_ms
                     );
                 }
             }

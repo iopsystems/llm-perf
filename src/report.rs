@@ -309,34 +309,11 @@ impl ReportBuilder {
     }
 
     fn build_latency_stats(&self) -> Result<LatencyStats> {
-        use crate::metrics::{INTER_TOKEN_LATENCY, REQUEST_LATENCY, TPOT, TTFT};
+        use crate::metrics::{REQUEST_LATENCY, TPOT};
 
         // Calculate means from histograms
-        let ttft_mean = Self::calculate_histogram_mean(&TTFT);
         let tpot_mean = Self::calculate_histogram_mean(&TPOT);
-        let itl_mean = Self::calculate_histogram_mean(&INTER_TOKEN_LATENCY);
         let request_mean = Self::calculate_histogram_mean(&REQUEST_LATENCY);
-
-        // Extract TTFT percentiles
-        let mut ttft_p50 = 0.0;
-        let mut ttft_p90 = 0.0;
-        let mut ttft_p95 = 0.0;
-        let mut ttft_p99 = 0.0;
-
-        if let Some(ttft_histogram) = TTFT.load()
-            && let Ok(Some(percentiles)) = ttft_histogram.percentiles(&[50.0, 90.0, 95.0, 99.0])
-        {
-            for (percentile, bucket) in percentiles.iter() {
-                let value_ms = bucket.end() as f64 / 1_000_000.0;
-                match percentile.round() as u32 {
-                    50 => ttft_p50 = value_ms,
-                    90 => ttft_p90 = value_ms,
-                    95 => ttft_p95 = value_ms,
-                    99 => ttft_p99 = value_ms,
-                    _ => {}
-                }
-            }
-        }
 
         // Extract TPOT percentiles
         let mut tpot_p50 = 0.0;
@@ -354,27 +331,6 @@ impl ReportBuilder {
                     90 => tpot_p90 = value_ms,
                     95 => tpot_p95 = value_ms,
                     99 => tpot_p99 = value_ms,
-                    _ => {}
-                }
-            }
-        }
-
-        // Extract ITL percentiles
-        let mut itl_p50 = 0.0;
-        let mut itl_p90 = 0.0;
-        let mut itl_p95 = 0.0;
-        let mut itl_p99 = 0.0;
-
-        if let Some(itl_histogram) = INTER_TOKEN_LATENCY.load()
-            && let Ok(Some(percentiles)) = itl_histogram.percentiles(&[50.0, 90.0, 95.0, 99.0])
-        {
-            for (percentile, bucket) in percentiles.iter() {
-                let value_ms = bucket.end() as f64 / 1_000_000.0;
-                match percentile.round() as u32 {
-                    50 => itl_p50 = value_ms,
-                    90 => itl_p90 = value_ms,
-                    95 => itl_p95 = value_ms,
-                    99 => itl_p99 = value_ms,
                     _ => {}
                 }
             }
@@ -402,21 +358,21 @@ impl ReportBuilder {
         }
 
         Ok(LatencyStats {
-            ttft_mean_ms: ttft_mean,
-            ttft_p50_ms: ttft_p50,
-            ttft_p90_ms: ttft_p90,
-            ttft_p95_ms: ttft_p95,
-            ttft_p99_ms: ttft_p99,
+            ttft_mean_ms: 0.0,
+            ttft_p50_ms: 0.0,
+            ttft_p90_ms: 0.0,
+            ttft_p95_ms: 0.0,
+            ttft_p99_ms: 0.0,
             tpot_mean_ms: tpot_mean,
             tpot_p50_ms: tpot_p50,
             tpot_p90_ms: tpot_p90,
             tpot_p95_ms: tpot_p95,
             tpot_p99_ms: tpot_p99,
-            itl_mean_ms: itl_mean,
-            itl_p50_ms: itl_p50,
-            itl_p90_ms: itl_p90,
-            itl_p95_ms: itl_p95,
-            itl_p99_ms: itl_p99,
+            itl_mean_ms: 0.0,
+            itl_p50_ms: 0.0,
+            itl_p90_ms: 0.0,
+            itl_p95_ms: 0.0,
+            itl_p99_ms: 0.0,
             request_mean_ms: request_mean,
             request_p50_ms: request_p50,
             request_p90_ms: request_p90,
@@ -612,16 +568,6 @@ impl ReportBuilder {
             report.throughput.output_tokens_per_second
         );
 
-        println!(
-            "{} TTFT (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
-            timestamp,
-            report.latency.ttft_mean_ms,
-            report.latency.ttft_p50_ms,
-            report.latency.ttft_p90_ms,
-            report.latency.ttft_p95_ms,
-            report.latency.ttft_p99_ms
-        );
-
         if report.latency.tpot_p50_ms > 0.0 {
             println!(
                 "{} TPOT (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
@@ -631,18 +577,6 @@ impl ReportBuilder {
                 report.latency.tpot_p90_ms,
                 report.latency.tpot_p95_ms,
                 report.latency.tpot_p99_ms
-            );
-        }
-
-        if report.latency.itl_p50_ms > 0.0 {
-            println!(
-                "{} ITL (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
-                timestamp,
-                report.latency.itl_mean_ms,
-                report.latency.itl_p50_ms,
-                report.latency.itl_p90_ms,
-                report.latency.itl_p95_ms,
-                report.latency.itl_p99_ms
             );
         }
 
