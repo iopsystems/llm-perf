@@ -1,0 +1,191 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb-amd64:
+    name: Build .deb (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-amd64
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Build .deb package
+        run: |
+          cargo deb --no-build
+          DEB_FILE=$(find target/debian -name 'llm-bench*.deb' | head -1)
+          echo "DEB_FILE=$DEB_FILE" >> $GITHUB_ENV
+          echo "Built: $DEB_FILE"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-amd64
+          path: ${{ env.DEB_FILE }}
+          retention-days: 7
+
+  build-deb-arm64:
+    name: Build .deb (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-arm64
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build release binary with cross
+        run: cross build --release --target aarch64-unknown-linux-gnu
+
+      - name: Build .deb package
+        run: |
+          cargo deb --no-build --no-strip --target aarch64-unknown-linux-gnu
+          DEB_FILE=$(find target/aarch64-unknown-linux-gnu/debian -name 'llm-bench*.deb' | head -1)
+          echo "DEB_FILE=$DEB_FILE" >> $GITHUB_ENV
+          echo "Built: $DEB_FILE"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-arm64
+          path: ${{ env.DEB_FILE }}
+          retention-days: 7
+
+  build-rpm-amd64:
+    name: Build .rpm (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-rpm-amd64
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Build .rpm package
+        run: |
+          cargo generate-rpm
+          RPM_FILE=$(find target/generate-rpm -name 'llm-bench*.rpm' | head -1)
+          echo "RPM_FILE=$RPM_FILE" >> $GITHUB_ENV
+          echo "Built: $RPM_FILE"
+
+      - name: Upload .rpm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-amd64
+          path: ${{ env.RPM_FILE }}
+          retention-days: 7
+
+  build-rpm-arm64:
+    name: Build .rpm (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-rpm-arm64
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+
+      - name: Build release binary with cross
+        run: cross build --release --target aarch64-unknown-linux-gnu
+
+      - name: Build .rpm package
+        run: |
+          cargo generate-rpm --target aarch64-unknown-linux-gnu
+          RPM_FILE=$(find target/aarch64-unknown-linux-gnu/generate-rpm -name 'llm-bench*.rpm' | head -1)
+          echo "RPM_FILE=$RPM_FILE" >> $GITHUB_ENV
+          echo "Built: $RPM_FILE"
+
+      - name: Upload .rpm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-arm64
+          path: ${{ env.RPM_FILE }}
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build-deb-amd64, build-deb-arm64, build-rpm-amd64, build-rpm-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download .deb artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: debs/
+          pattern: deb-*
+          merge-multiple: true
+
+      - name: Download .rpm artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: rpms/
+          pattern: rpm-*
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: |
+          echo "=== DEBs ==="
+          ls -la debs/
+          echo "=== RPMs ==="
+          ls -la rpms/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            debs/*.deb
+            rpms/*.rpm
+          generate_release_notes: true

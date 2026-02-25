@@ -34,3 +34,20 @@ warp = "0.3"
 [dev-dependencies]
 mockito = "1.2"
 pretty_assertions = "1.4"
+
+[package.metadata.deb]
+name = "llm-bench"
+maintainer = "Brian Martin <brayniac@gmail.com>"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/llm-bench", "usr/bin/", "755"],
+    ["examples/config.example.toml", "etc/llm-bench/config.toml.example", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "llm-bench"
+assets = [
+    { source = "target/release/llm-bench", dest = "/usr/bin/llm-bench", mode = "0755" },
+    { source = "examples/config.example.toml", dest = "/etc/llm-bench/config.toml.example", mode = "0644", config = true },
+]
