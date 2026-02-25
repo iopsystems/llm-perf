@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [0.1.2] - 2026-02-25
+
+### Improvements
+
+- Check server readiness on launch before starting benchmark
+- Remove redundant overall TTFT/ITL histograms in favor of context-aware variants
+- Fix collapsible if statements for clippy compliance
+
+### Infrastructure
+
+- Add release and tag-release GitHub Actions workflows
+- Add /release skill for creating release PRs
+
 ## [0.1.1] - 2025-10-14
 
 ### Bug Fixes
