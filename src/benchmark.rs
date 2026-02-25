@@ -48,7 +48,7 @@ pub struct Prompt {
 ///
 /// #[tokio::main]
 /// async fn main() -> anyhow::Result<()> {
-///     let config = Config::from_file("config.toml")?;
+///     let config = Config::load(&"config.toml".into())?;
 ///     let runner = BenchmarkRunner::new(config).await?;
 ///     runner.run().await?;
 ///     Ok(())
@@ -88,7 +88,7 @@ impl BenchmarkRunner {
     /// use llm_bench::{BenchmarkRunner, Config};
     ///
     /// # async fn example() -> anyhow::Result<()> {
-    /// let config = Config::from_file("config.toml")?;
+    /// let config = Config::load(&"config.toml".into())?;
     /// let runner = BenchmarkRunner::new(config).await?;
     /// # Ok(())
     /// # }
@@ -210,7 +210,7 @@ impl BenchmarkRunner {
     /// ```no_run
     /// # use llm_bench::{BenchmarkRunner, Config};
     /// # async fn example() -> anyhow::Result<()> {
-    /// let config = Config::from_file("config.toml")?;
+    /// let config = Config::load(&"config.toml".into())?;
     /// let runner = BenchmarkRunner::new(config).await?;
     ///
     /// // Run the benchmark and generate report
