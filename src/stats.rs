@@ -1,8 +1,8 @@
 use chrono::{Timelike, Utc};
 use metriken::histogram::Histogram;
 use metriken_exposition::SnapshotterBuilder;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::time::{Instant, interval_at, timeout};

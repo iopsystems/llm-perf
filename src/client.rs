@@ -284,7 +284,9 @@ impl OpenAIClient {
 
         let url = format!("{}/chat/completions", self.base_url);
 
-        let mut req = self.client.post(&url)
+        let mut req = self
+            .client
+            .post(&url)
             .json(&request)
             .header("Connection", "keep-alive"); // Ensure HTTP/1.1 keep-alive
 
@@ -308,7 +310,8 @@ impl OpenAIClient {
                     if err_msg.contains("connection closed")
                         || err_msg.contains("connection reset")
                         || err_msg.contains("broken pipe")
-                        || err_msg.contains("connection refused") {
+                        || err_msg.contains("connection refused")
+                    {
                         return Err(ClientError::Connection(format!("Request error: {}", e)).into());
                     } else {
                         return Err(ClientError::Other(format!("Request error: {}", e)).into());
@@ -503,13 +506,19 @@ pub async fn check_server_ready(
     loop {
         attempt += 1;
 
-        log::debug!("Server readiness check attempt {}: GET {}/models", attempt, base_url);
+        log::debug!(
+            "Server readiness check attempt {}: GET {}/models",
+            attempt,
+            base_url
+        );
 
         // Try to list models with a short timeout per request
         match tokio::time::timeout(
             Duration::from_secs(10),
-            list_models(base_url, api_key, Duration::from_secs(10))
-        ).await {
+            list_models(base_url, api_key, Duration::from_secs(10)),
+        )
+        .await
+        {
             Ok(Ok(models)) => {
                 log::info!(
                     "Server is ready ({} model{} available after {:.1}s)",

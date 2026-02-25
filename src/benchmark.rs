@@ -258,9 +258,11 @@ impl BenchmarkRunner {
         // Run benchmark (without generating report)
         // If qps is set, use fixed QPS mode; otherwise use concurrent mode
         let test_duration = if self.config.load.qps.is_some() {
-            self.run_qps_mode_internal(start_instant, warmup_complete).await?
+            self.run_qps_mode_internal(start_instant, warmup_complete)
+                .await?
         } else {
-            self.run_concurrent_mode_internal(start_instant, warmup_complete).await?
+            self.run_concurrent_mode_internal(start_instant, warmup_complete)
+                .await?
         };
 
         // Stop metrics capture
@@ -282,7 +284,11 @@ impl BenchmarkRunner {
         self.generate_report(report_builder).await
     }
 
-    async fn run_concurrent_mode_internal(&self, start_instant: Instant, warmup_complete: Arc<tokio::sync::Notify>) -> Result<Duration> {
+    async fn run_concurrent_mode_internal(
+        &self,
+        start_instant: Instant,
+        warmup_complete: Arc<tokio::sync::Notify>,
+    ) -> Result<Duration> {
         info!(
             "Running in concurrent mode with {} workers",
             self.config.load.concurrent_requests
@@ -524,9 +530,11 @@ impl BenchmarkRunner {
         let test_duration = test_start.elapsed();
         let total_duration = start_instant.elapsed();
 
-        info!("Benchmark completed in {:.1}s total ({:.1}s test)",
-              total_duration.as_secs_f64(),
-              test_duration.as_secs_f64());
+        info!(
+            "Benchmark completed in {:.1}s total ({:.1}s test)",
+            total_duration.as_secs_f64(),
+            test_duration.as_secs_f64()
+        );
 
         // Log warmup summary if applicable
         if warmup_count > 0 || warmup_duration.is_some() {
@@ -538,7 +546,11 @@ impl BenchmarkRunner {
         Ok(test_duration)
     }
 
-    async fn run_qps_mode_internal(&self, start_instant: Instant, warmup_complete: Arc<tokio::sync::Notify>) -> Result<Duration> {
+    async fn run_qps_mode_internal(
+        &self,
+        start_instant: Instant,
+        warmup_complete: Arc<tokio::sync::Notify>,
+    ) -> Result<Duration> {
         let qps = self
             .config
             .load
@@ -747,9 +759,11 @@ impl BenchmarkRunner {
         let test_duration = test_start.elapsed();
         let total_duration = start_instant.elapsed();
 
-        info!("Benchmark completed in {:.1}s total ({:.1}s test)",
-              total_duration.as_secs_f64(),
-              test_duration.as_secs_f64());
+        info!(
+            "Benchmark completed in {:.1}s total ({:.1}s test)",
+            total_duration.as_secs_f64(),
+            test_duration.as_secs_f64()
+        );
 
         // Log warmup summary if applicable
         if warmup_count > 0 || warmup_duration.is_some() {

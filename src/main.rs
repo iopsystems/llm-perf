@@ -1,6 +1,6 @@
 use anyhow::Result;
 use llm_bench::{Cli, Config};
-use log::{debug, info, LevelFilter, Metadata, Record};
+use log::{LevelFilter, Metadata, Record, debug, info};
 use ringlog::{File, LogBuilder, MultiLogBuilder, Output, Stderr};
 use std::collections::HashMap;
 use std::io::Write;
