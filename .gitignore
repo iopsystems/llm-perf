@@ -4,7 +4,8 @@ Cargo.lock
 *.rs.bk
 
 # AI
-.claude/
+.claude/*
+!.claude/skills/
 
 # IDE
 .idea/
