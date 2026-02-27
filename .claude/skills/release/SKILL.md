@@ -119,7 +119,7 @@ When the PR is merged to main, the `tag-release.yml` workflow will:
 1. Detect the version from Cargo.toml
 2. Create and push the git tag `vX.Y.Z`
 3. The `release.yml` workflow then builds deb/rpm packages and creates a GitHub Release
-4. Create a commit bumping to next dev version (e.g., `0.2.1-alpha.0`)
+4. Open and auto-merge a PR bumping to next dev version (e.g., `0.2.1-alpha.0`)
 
 ## Troubleshooting
 
