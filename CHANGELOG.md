@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-02-27
+
+### Bug Fixes
+
+- Fix TTFT and ITL always reported as 0.0 in JSON and console output.
+  Aggregate context-aware histogram buckets to produce overall percentiles.
+- Use server-reported token counts via `stream_options.include_usage` instead of
+  re-tokenizing with tiktoken's `cl100k_base`, which produced inaccurate counts
+  for non-OpenAI models (Llama, Qwen, Mistral, etc.). Falls back to tiktoken
+  when the server doesn't support it.
+- Add TTFT and ITL to console and brief summary output.
+
 ## [0.1.4] - 2026-02-27
 
 ### Bug Fixes
