@@ -355,6 +355,9 @@ impl OpenAIClient {
             last_token_time: None,
             total_tokens: 0,
             inter_token_latencies: Vec::new(),
+            pending_chunks: std::collections::VecDeque::new(),
+            partial_line: String::new(),
+            done: false,
         })
     }
 
@@ -400,61 +403,106 @@ pub struct StreamResponse {
     last_token_time: Option<Instant>,
     total_tokens: u32,
     inter_token_latencies: Vec<Duration>,
+    /// Buffer for parsed chunks when a single HTTP chunk contains multiple SSE events
+    pending_chunks: std::collections::VecDeque<ChatCompletionChunk>,
+    /// Buffer for incomplete SSE lines split across HTTP chunks
+    partial_line: String,
+    /// Set to true when we encounter the [DONE] marker
+    done: bool,
 }
 
 impl StreamResponse {
     pub async fn next_chunk(&mut self) -> Result<Option<ChatCompletionChunk>> {
         loop {
-            let bytes = self.response.chunk().await?;
+            // Return buffered chunks first
+            if let Some(chunk) = self.pending_chunks.pop_front() {
+                self.record_chunk_metrics(&chunk);
+                return Ok(Some(chunk));
+            }
 
-            // If no more data from server, stream is done
-            if bytes.is_none() {
+            // If we've seen [DONE], no more data
+            if self.done {
                 return Ok(None);
             }
 
-            let data = bytes.unwrap();
+            let bytes = self.response.chunk().await?;
 
-            // Parse SSE format
-            let text = String::from_utf8_lossy(&data);
-            for line in text.lines() {
+            // If no more data from server, stream is done
+            let Some(data) = bytes else {
+                return Ok(None);
+            };
+
+            // Prepend any partial line from the previous HTTP chunk
+            let text = if self.partial_line.is_empty() {
+                String::from_utf8_lossy(&data).into_owned()
+            } else {
+                let mut combined = std::mem::take(&mut self.partial_line);
+                combined.push_str(&String::from_utf8_lossy(&data));
+                combined
+            };
+
+            // Check if the text ends with a newline; if not, the last line is partial
+            let ends_with_newline = text.ends_with('\n') || text.ends_with('\r');
+            let lines: Vec<&str> = text.lines().collect();
+
+            for (i, line) in lines.iter().enumerate() {
+                // If this is the last line and the chunk didn't end with a newline,
+                // it's a partial line split across HTTP chunks
+                if i == lines.len() - 1 && !ends_with_newline {
+                    self.partial_line = line.to_string();
+                    continue;
+                }
+
                 if let Some(json_str) = line.strip_prefix("data: ") {
                     if json_str == "[DONE]" {
-                        return Ok(None);
+                        self.done = true;
+                        break;
                     }
 
                     if let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(json_str) {
-                        // Check if this chunk contains content
-                        let has_content = chunk.choices.iter().any(|c| c.delta.content.is_some());
-
-                        if has_content {
-                            let now = Instant::now();
-
-                            // Record time to first token
-                            if self.first_token_time.is_none() {
-                                self.first_token_time = Some(self.start_time.elapsed());
-                            } else if let Some(last_time) = self.last_token_time {
-                                // Record inter-token latency
-                                let itl = now.duration_since(last_time);
-                                self.inter_token_latencies.push(itl);
-                            }
-
-                            self.last_token_time = Some(now);
-
-                            // Count tokens (approximate - just counting content chunks)
-                            for choice in &chunk.choices {
-                                if choice.delta.content.is_some() {
-                                    self.total_tokens += 1;
-                                }
-                            }
-                        }
-
-                        return Ok(Some(chunk));
+                        self.pending_chunks.push_back(chunk);
                     }
                 }
             }
 
-            // If this chunk had no parseable data, loop and read the next chunk
-            // instead of signaling end-of-stream
+            // Return the first buffered chunk if any were parsed
+            if let Some(chunk) = self.pending_chunks.pop_front() {
+                self.record_chunk_metrics(&chunk);
+                return Ok(Some(chunk));
+            }
+
+            // If we hit [DONE] with no pending chunks, we're done
+            if self.done {
+                return Ok(None);
+            }
+
+            // No parseable data in this HTTP chunk, loop and read the next one
+        }
+    }
+
+    fn record_chunk_metrics(&mut self, chunk: &ChatCompletionChunk) {
+        let has_content = chunk.choices.iter().any(|c| c.delta.content.is_some());
+
+        if has_content {
+            let now = Instant::now();
+
+            // Record time to first token
+            if self.first_token_time.is_none() {
+                self.first_token_time = Some(self.start_time.elapsed());
+            } else if let Some(last_time) = self.last_token_time {
+                // Record inter-token latency
+                let itl = now.duration_since(last_time);
+                self.inter_token_latencies.push(itl);
+            }
+
+            self.last_token_time = Some(now);
+
+            // Count tokens (approximate - just counting content chunks)
+            for choice in &chunk.choices {
+                if choice.delta.content.is_some() {
+                    self.total_tokens += 1;
+                }
+            }
         }
     }
 
