@@ -51,14 +51,6 @@ jobs:
           git push origin "v${{ steps.version.outputs.version }}"
           echo "Created and pushed tag v${{ steps.version.outputs.version }}"
 
-      - name: Install Rust
-        if: steps.check_tag.outputs.exists == 'false'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-release
-        if: steps.check_tag.outputs.exists == 'false'
-        run: cargo install cargo-release --locked
-
       - name: Bump to next dev version
         if: steps.check_tag.outputs.exists == 'false'
         env:
@@ -70,13 +62,15 @@ jobs:
           NEXT_DEV="${MAJOR}.${MINOR}.$((PATCH + 1))-alpha.0"
           echo "Bumping to next dev version: $NEXT_DEV"
 
-          # Create branch, update, and open PR
+          # Create branch and update version in Cargo.toml
           BRANCH="chore/bump-${NEXT_DEV}"
           git checkout -b "$BRANCH"
 
-          cargo release version "$NEXT_DEV" --execute --no-confirm
+          sed -i "0,/^version = \".*\"/s//version = \"${NEXT_DEV}\"/" Cargo.toml
+          # Update Cargo.lock to match
+          sed -i "0,/^version = \".*\"/s//version = \"${NEXT_DEV}\"/" Cargo.lock
 
-          git add -A
+          git add Cargo.toml Cargo.lock
           git commit -m "chore: bump to ${NEXT_DEV} for next development iteration"
           git push origin "$BRANCH"
 
