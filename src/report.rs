@@ -342,38 +342,44 @@ impl ReportBuilder {
 
     fn build_latency_stats(&self) -> Result<LatencyStats> {
         use crate::metrics::{
-            ITL_LARGE, ITL_MEDIUM, ITL_SMALL, ITL_XLARGE, ITL_XXLARGE,
-            REQUEST_LATENCY, TPOT,
+            ITL_LARGE, ITL_MEDIUM, ITL_SMALL, ITL_XLARGE, ITL_XXLARGE, REQUEST_LATENCY, TPOT,
             TTFT_LARGE, TTFT_MEDIUM, TTFT_SMALL, TTFT_XLARGE, TTFT_XXLARGE,
         };
 
         // Aggregate TTFT across all context buckets
-        let (ttft_mean, ttft_p50, ttft_p90, ttft_p95, ttft_p99) =
-            if let Some(ttft) = Self::merge_context_histograms(&[
-                &TTFT_SMALL, &TTFT_MEDIUM, &TTFT_LARGE, &TTFT_XLARGE, &TTFT_XXLARGE,
+        let (ttft_mean, ttft_p50, ttft_p90, ttft_p95, ttft_p99) = if let Some(ttft) =
+            Self::merge_context_histograms(&[
+                &TTFT_SMALL,
+                &TTFT_MEDIUM,
+                &TTFT_LARGE,
+                &TTFT_XLARGE,
+                &TTFT_XXLARGE,
             ]) {
-                Self::extract_percentiles_ms(&ttft)
-            } else {
-                (0.0, 0.0, 0.0, 0.0, 0.0)
-            };
+            Self::extract_percentiles_ms(&ttft)
+        } else {
+            (0.0, 0.0, 0.0, 0.0, 0.0)
+        };
 
         // Aggregate ITL across all context buckets
-        let (itl_mean, itl_p50, itl_p90, itl_p95, itl_p99) =
-            if let Some(itl) = Self::merge_context_histograms(&[
-                &ITL_SMALL, &ITL_MEDIUM, &ITL_LARGE, &ITL_XLARGE, &ITL_XXLARGE,
+        let (itl_mean, itl_p50, itl_p90, itl_p95, itl_p99) = if let Some(itl) =
+            Self::merge_context_histograms(&[
+                &ITL_SMALL,
+                &ITL_MEDIUM,
+                &ITL_LARGE,
+                &ITL_XLARGE,
+                &ITL_XXLARGE,
             ]) {
-                Self::extract_percentiles_ms(&itl)
-            } else {
-                (0.0, 0.0, 0.0, 0.0, 0.0)
-            };
+            Self::extract_percentiles_ms(&itl)
+        } else {
+            (0.0, 0.0, 0.0, 0.0, 0.0)
+        };
 
         // Extract TPOT percentiles
-        let (tpot_mean, tpot_p50, tpot_p90, tpot_p95, tpot_p99) =
-            if let Some(tpot) = TPOT.load() {
-                Self::extract_percentiles_ms(&tpot)
-            } else {
-                (0.0, 0.0, 0.0, 0.0, 0.0)
-            };
+        let (tpot_mean, tpot_p50, tpot_p90, tpot_p95, tpot_p99) = if let Some(tpot) = TPOT.load() {
+            Self::extract_percentiles_ms(&tpot)
+        } else {
+            (0.0, 0.0, 0.0, 0.0, 0.0)
+        };
 
         // Extract request latency percentiles
         let (request_mean, request_p50, request_p90, request_p95, request_p99) =

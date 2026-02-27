@@ -834,15 +834,14 @@ impl BenchmarkRunner {
 
                 // Use server-reported token counts when available (accurate for any model),
                 // fall back to tiktoken estimation (may be inaccurate for non-OpenAI models)
-                let (input_tokens, output_tokens) =
-                    if let Some(usage) = stream.server_usage() {
-                        (usage.prompt_tokens as u64, usage.completion_tokens as u64)
-                    } else {
-                        (
-                            tokenizer.count_tokens(&prompt.prompt) as u64,
-                            tokenizer.count_tokens(&total_content) as u64,
-                        )
-                    };
+                let (input_tokens, output_tokens) = if let Some(usage) = stream.server_usage() {
+                    (usage.prompt_tokens as u64, usage.completion_tokens as u64)
+                } else {
+                    (
+                        tokenizer.count_tokens(&prompt.prompt) as u64,
+                        tokenizer.count_tokens(&total_content) as u64,
+                    )
+                };
 
                 // Only record metrics if not in warmup phase
                 if !is_warmup {
