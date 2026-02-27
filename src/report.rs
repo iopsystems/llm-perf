@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use metriken::histogram::Histogram;
 use serde::Serialize;
 use std::time::{Duration, SystemTime};
 
@@ -285,94 +286,119 @@ impl ReportBuilder {
         })
     }
 
-    /// Calculate mean from histogram using bucket upper edges (consistent with percentiles)
-    fn calculate_histogram_mean(histogram: &metriken::AtomicHistogram) -> f64 {
-        if let Some(loaded) = histogram.load() {
+    /// Merge all context-aware histograms into a single combined histogram.
+    fn merge_context_histograms(histograms: &[&metriken::AtomicHistogram]) -> Option<Histogram> {
+        let mut merged: Option<Histogram> = None;
+        for h in histograms {
+            if let Some(loaded) = h.load() {
+                merged = Some(match merged {
+                    Some(existing) => existing.checked_add(&loaded).unwrap_or(existing),
+                    None => loaded,
+                });
+            }
+        }
+        merged
+    }
+
+    /// Extract percentiles from a histogram, returning (mean, p50, p90, p95, p99) in milliseconds.
+    fn extract_percentiles_ms(histogram: &Histogram) -> (f64, f64, f64, f64, f64) {
+        let mean = {
             let mut sum = 0u64;
             let mut count = 0u64;
-
-            // Iterate through all buckets
-            for bucket in loaded.iter() {
+            for bucket in histogram.iter() {
                 let bucket_count = bucket.count();
                 if bucket_count > 0 {
-                    // Use upper edge for consistency with percentile calculation
                     sum += bucket.end() * bucket_count;
                     count += bucket_count;
                 }
             }
-
             if count > 0 {
-                return (sum as f64 / count as f64) / 1_000_000.0; // Convert to ms
+                (sum as f64 / count as f64) / 1_000_000.0
+            } else {
+                0.0
+            }
+        };
+
+        let mut p50 = 0.0;
+        let mut p90 = 0.0;
+        let mut p95 = 0.0;
+        let mut p99 = 0.0;
+
+        if let Ok(Some(percentiles)) = histogram.percentiles(&[50.0, 90.0, 95.0, 99.0]) {
+            for (percentile, bucket) in percentiles.iter() {
+                let value_ms = bucket.end() as f64 / 1_000_000.0;
+                match percentile.round() as u32 {
+                    50 => p50 = value_ms,
+                    90 => p90 = value_ms,
+                    95 => p95 = value_ms,
+                    99 => p99 = value_ms,
+                    _ => {}
+                }
             }
         }
-        0.0
+
+        (mean, p50, p90, p95, p99)
     }
 
     fn build_latency_stats(&self) -> Result<LatencyStats> {
-        use crate::metrics::{REQUEST_LATENCY, TPOT};
+        use crate::metrics::{
+            ITL_LARGE, ITL_MEDIUM, ITL_SMALL, ITL_XLARGE, ITL_XXLARGE,
+            REQUEST_LATENCY, TPOT,
+            TTFT_LARGE, TTFT_MEDIUM, TTFT_SMALL, TTFT_XLARGE, TTFT_XXLARGE,
+        };
 
-        // Calculate means from histograms
-        let tpot_mean = Self::calculate_histogram_mean(&TPOT);
-        let request_mean = Self::calculate_histogram_mean(&REQUEST_LATENCY);
+        // Aggregate TTFT across all context buckets
+        let (ttft_mean, ttft_p50, ttft_p90, ttft_p95, ttft_p99) =
+            if let Some(ttft) = Self::merge_context_histograms(&[
+                &TTFT_SMALL, &TTFT_MEDIUM, &TTFT_LARGE, &TTFT_XLARGE, &TTFT_XXLARGE,
+            ]) {
+                Self::extract_percentiles_ms(&ttft)
+            } else {
+                (0.0, 0.0, 0.0, 0.0, 0.0)
+            };
+
+        // Aggregate ITL across all context buckets
+        let (itl_mean, itl_p50, itl_p90, itl_p95, itl_p99) =
+            if let Some(itl) = Self::merge_context_histograms(&[
+                &ITL_SMALL, &ITL_MEDIUM, &ITL_LARGE, &ITL_XLARGE, &ITL_XXLARGE,
+            ]) {
+                Self::extract_percentiles_ms(&itl)
+            } else {
+                (0.0, 0.0, 0.0, 0.0, 0.0)
+            };
 
         // Extract TPOT percentiles
-        let mut tpot_p50 = 0.0;
-        let mut tpot_p90 = 0.0;
-        let mut tpot_p95 = 0.0;
-        let mut tpot_p99 = 0.0;
-
-        if let Some(tpot_histogram) = TPOT.load()
-            && let Ok(Some(percentiles)) = tpot_histogram.percentiles(&[50.0, 90.0, 95.0, 99.0])
-        {
-            for (percentile, bucket) in percentiles.iter() {
-                let value_ms = bucket.end() as f64 / 1_000_000.0;
-                match percentile.round() as u32 {
-                    50 => tpot_p50 = value_ms,
-                    90 => tpot_p90 = value_ms,
-                    95 => tpot_p95 = value_ms,
-                    99 => tpot_p99 = value_ms,
-                    _ => {}
-                }
-            }
-        }
+        let (tpot_mean, tpot_p50, tpot_p90, tpot_p95, tpot_p99) =
+            if let Some(tpot) = TPOT.load() {
+                Self::extract_percentiles_ms(&tpot)
+            } else {
+                (0.0, 0.0, 0.0, 0.0, 0.0)
+            };
 
         // Extract request latency percentiles
-        let mut request_p50 = 0.0;
-        let mut request_p90 = 0.0;
-        let mut request_p95 = 0.0;
-        let mut request_p99 = 0.0;
-
-        if let Some(request_histogram) = REQUEST_LATENCY.load()
-            && let Ok(Some(percentiles)) = request_histogram.percentiles(&[50.0, 90.0, 95.0, 99.0])
-        {
-            for (percentile, bucket) in percentiles.iter() {
-                let value_ms = bucket.end() as f64 / 1_000_000.0;
-                match percentile.round() as u32 {
-                    50 => request_p50 = value_ms,
-                    90 => request_p90 = value_ms,
-                    95 => request_p95 = value_ms,
-                    99 => request_p99 = value_ms,
-                    _ => {}
-                }
-            }
-        }
+        let (request_mean, request_p50, request_p90, request_p95, request_p99) =
+            if let Some(request) = REQUEST_LATENCY.load() {
+                Self::extract_percentiles_ms(&request)
+            } else {
+                (0.0, 0.0, 0.0, 0.0, 0.0)
+            };
 
         Ok(LatencyStats {
-            ttft_mean_ms: 0.0,
-            ttft_p50_ms: 0.0,
-            ttft_p90_ms: 0.0,
-            ttft_p95_ms: 0.0,
-            ttft_p99_ms: 0.0,
+            ttft_mean_ms: ttft_mean,
+            ttft_p50_ms: ttft_p50,
+            ttft_p90_ms: ttft_p90,
+            ttft_p95_ms: ttft_p95,
+            ttft_p99_ms: ttft_p99,
             tpot_mean_ms: tpot_mean,
             tpot_p50_ms: tpot_p50,
             tpot_p90_ms: tpot_p90,
             tpot_p95_ms: tpot_p95,
             tpot_p99_ms: tpot_p99,
-            itl_mean_ms: 0.0,
-            itl_p50_ms: 0.0,
-            itl_p90_ms: 0.0,
-            itl_p95_ms: 0.0,
-            itl_p99_ms: 0.0,
+            itl_mean_ms: itl_mean,
+            itl_p50_ms: itl_p50,
+            itl_p90_ms: itl_p90,
+            itl_p95_ms: itl_p95,
+            itl_p99_ms: itl_p99,
             request_mean_ms: request_mean,
             request_p50_ms: request_p50,
             request_p90_ms: request_p90,
@@ -568,6 +594,18 @@ impl ReportBuilder {
             report.throughput.output_tokens_per_second
         );
 
+        if report.latency.ttft_p50_ms > 0.0 {
+            println!(
+                "{} TTFT (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
+                timestamp,
+                report.latency.ttft_mean_ms,
+                report.latency.ttft_p50_ms,
+                report.latency.ttft_p90_ms,
+                report.latency.ttft_p95_ms,
+                report.latency.ttft_p99_ms
+            );
+        }
+
         if report.latency.tpot_p50_ms > 0.0 {
             println!(
                 "{} TPOT (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
@@ -577,6 +615,18 @@ impl ReportBuilder {
                 report.latency.tpot_p90_ms,
                 report.latency.tpot_p95_ms,
                 report.latency.tpot_p99_ms
+            );
+        }
+
+        if report.latency.itl_p50_ms > 0.0 {
+            println!(
+                "{} ITL (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
+                timestamp,
+                report.latency.itl_mean_ms,
+                report.latency.itl_p50_ms,
+                report.latency.itl_p90_ms,
+                report.latency.itl_p95_ms,
+                report.latency.itl_p99_ms
             );
         }
 

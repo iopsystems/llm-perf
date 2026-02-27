@@ -48,6 +48,13 @@ pub struct ChatCompletionRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamOptions {
+    pub include_usage: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +96,9 @@ pub struct ChatCompletionChunk {
     pub created: u64,
     pub model: String,
     pub choices: Vec<StreamChoice>,
+    /// Server-reported token usage (present in final chunk when stream_options.include_usage is set)
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -227,6 +237,7 @@ impl OpenAIClient {
             max_tokens,
             temperature: None,
             stream: Some(false),
+            stream_options: None,
         }
     }
 
@@ -281,6 +292,9 @@ impl OpenAIClient {
     ) -> Result<StreamResponse> {
         let mut request = request;
         request.stream = Some(true);
+        request.stream_options = Some(StreamOptions {
+            include_usage: true,
+        });
 
         let url = format!("{}/chat/completions", self.base_url);
 
@@ -358,6 +372,7 @@ impl OpenAIClient {
             pending_chunks: std::collections::VecDeque::new(),
             partial_line: String::new(),
             done: false,
+            server_usage: None,
         })
     }
 
@@ -409,6 +424,8 @@ pub struct StreamResponse {
     partial_line: String,
     /// Set to true when we encounter the [DONE] marker
     done: bool,
+    /// Server-reported token usage from the final streaming chunk
+    server_usage: Option<Usage>,
 }
 
 impl StreamResponse {
@@ -481,6 +498,11 @@ impl StreamResponse {
     }
 
     fn record_chunk_metrics(&mut self, chunk: &ChatCompletionChunk) {
+        // Capture server-reported usage from the final chunk
+        if let Some(usage) = &chunk.usage {
+            self.server_usage = Some(usage.clone());
+        }
+
         let has_content = chunk.choices.iter().any(|c| c.delta.content.is_some());
 
         if has_content {
@@ -516,6 +538,11 @@ impl StreamResponse {
 
     pub fn inter_token_latencies(&self) -> &[Duration] {
         &self.inter_token_latencies
+    }
+
+    /// Server-reported token usage, if the server supports stream_options.include_usage
+    pub fn server_usage(&self) -> Option<&Usage> {
+        self.server_usage.as_ref()
     }
 }
 

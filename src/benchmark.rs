@@ -832,9 +832,17 @@ impl BenchmarkRunner {
                     }
                 }
 
-                // Count tokens first so we can use them for context-aware metrics
-                let input_tokens = tokenizer.count_tokens(&prompt.prompt) as u64;
-                let output_tokens = tokenizer.count_tokens(&total_content) as u64;
+                // Use server-reported token counts when available (accurate for any model),
+                // fall back to tiktoken estimation (may be inaccurate for non-OpenAI models)
+                let (input_tokens, output_tokens) =
+                    if let Some(usage) = stream.server_usage() {
+                        (usage.prompt_tokens as u64, usage.completion_tokens as u64)
+                    } else {
+                        (
+                            tokenizer.count_tokens(&prompt.prompt) as u64,
+                            tokenizer.count_tokens(&total_content) as u64,
+                        )
+                    };
 
                 // Only record metrics if not in warmup phase
                 if !is_warmup {
@@ -973,6 +981,18 @@ impl BenchmarkRunner {
             report.throughput.output_tokens_per_second
         );
 
+        if report.latency.ttft_p50_ms > 0.0 {
+            println!(
+                "{} TTFT (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
+                timestamp,
+                report.latency.ttft_mean_ms,
+                report.latency.ttft_p50_ms,
+                report.latency.ttft_p90_ms,
+                report.latency.ttft_p95_ms,
+                report.latency.ttft_p99_ms
+            );
+        }
+
         if report.latency.tpot_p50_ms > 0.0 {
             println!(
                 "{} TPOT (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
@@ -982,6 +1002,18 @@ impl BenchmarkRunner {
                 report.latency.tpot_p90_ms,
                 report.latency.tpot_p95_ms,
                 report.latency.tpot_p99_ms
+            );
+        }
+
+        if report.latency.itl_p50_ms > 0.0 {
+            println!(
+                "{} ITL (ms): mean: {:.1} p50: {:.0} p90: {:.0} p95: {:.0} p99: {:.0}",
+                timestamp,
+                report.latency.itl_mean_ms,
+                report.latency.itl_p50_ms,
+                report.latency.itl_p90_ms,
+                report.latency.itl_p95_ms,
+                report.latency.itl_p99_ms
             );
         }
 
