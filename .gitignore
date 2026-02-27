@@ -23,6 +23,13 @@ results/
 *.local.toml
 *.local.jsonl
 
+# Generated prompt files (regenerate with scripts/prepare_by_size.py)
+examples/prompts/openorca-small.jsonl
+examples/prompts/openorca-medium.jsonl
+examples/prompts/openorca-large.jsonl
+examples/prompts/openorca-xlarge.jsonl
+examples/prompts/openorca-xxlarge.jsonl
+
 # Test outputs
 *-results.json
 *-results.csv
