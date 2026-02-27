@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-02-27
+
+### Bug Fixes
+
+- Fix SSE streaming parser to handle multiple events batched in a single HTTP
+  chunk. Previously only the first event was processed and the rest were silently
+  dropped, causing lost response content and underreported token/s — especially
+  at low concurrency where servers like llama.cpp may batch multiple SSE events
+  into one TCP segment.
+- Handle partial SSE lines split across HTTP chunk boundaries.
+
+### Infrastructure
+
+- Fix tag-release workflow to match squash-merge commit message format
+
 ## [0.1.3] - 2026-02-25
 
 ### Infrastructure
