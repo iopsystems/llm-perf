@@ -1,9 +1,10 @@
 use anyhow::Result;
-use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Semaphore;
 
 use llm_bench::client::{ChatCompletionRequest, ClientConfig, OpenAIClient};
@@ -49,6 +50,15 @@ pub struct TokenStats {
 pub struct EvaluationResult {
 	pub category_stats: HashMap<String, CategoryStats>,
 	pub token_stats: TokenStats,
+}
+
+/// Shared atomic counters for lock-free progress reporting.
+struct ProgressCounters {
+	completed: AtomicU32,
+	correct: AtomicU32,
+	wrong: AtomicU32,
+	extraction_failures: AtomicU32,
+	total: u32,
 }
 
 /// Load existing results from a category result file for resume support.
@@ -113,6 +123,29 @@ fn save_summary(stats: &HashMap<String, CategoryStats>, path: &Path) -> Result<(
 	let json = serde_json::to_string_pretty(&summary)?;
 	std::fs::write(path, json)?;
 	Ok(())
+}
+
+fn print_status(category: &str, counters: &ProgressCounters, start: Instant) {
+	let completed = counters.completed.load(Ordering::Relaxed);
+	let correct = counters.correct.load(Ordering::Relaxed);
+	let wrong = counters.wrong.load(Ordering::Relaxed);
+	let failures = counters.extraction_failures.load(Ordering::Relaxed);
+	let answered = correct + wrong;
+	let acc = if answered > 0 {
+		correct as f64 / answered as f64 * 100.0
+	} else {
+		0.0
+	};
+	let elapsed = start.elapsed().as_secs();
+	let mut msg = format!(
+		"  {}: {}/{} completed, {}/{} correct ({:.2}%)",
+		category, completed, counters.total, correct, answered, acc
+	);
+	if failures > 0 {
+		msg.push_str(&format!(", {} failed extractions", failures));
+	}
+	msg.push_str(&format!(", {}m{}s elapsed", elapsed / 60, elapsed % 60));
+	eprintln!("{}", msg);
 }
 
 /// Run evaluation across all specified categories.
@@ -210,16 +243,26 @@ pub async fn run_evaluation(
 			new_questions.len()
 		);
 
-		let pb = ProgressBar::new(new_questions.len() as u64);
-		pb.set_style(
-			ProgressStyle::default_bar()
-				.template(&format!(
-					"{{spinner:.green}} {} [{{bar:40.cyan/blue}}] {{pos}}/{{len}} [{{elapsed_precise}}] {{msg}}",
-					category
-				))
-				.unwrap()
-				.progress_chars("=>-"),
-		);
+		let cat_start = Instant::now();
+
+		// Atomic counters for lock-free progress reporting
+		let counters = Arc::new(ProgressCounters {
+			completed: AtomicU32::new(0),
+			correct: AtomicU32::new(cat_stats.correct),
+			wrong: AtomicU32::new(cat_stats.wrong),
+			extraction_failures: AtomicU32::new(cat_stats.extraction_failures),
+			total: total as u32,
+		});
+
+		// Spawn periodic status printer (every 60s)
+		let status_counters = Arc::clone(&counters);
+		let status_category = category.clone();
+		let status_handle = tokio::spawn(async move {
+			loop {
+				tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+				print_status(&status_category, &status_counters, cat_start);
+			}
+		});
 
 		// Shared state for collecting results
 		let results = Arc::new(tokio::sync::Mutex::new(existing_results));
@@ -234,7 +277,7 @@ pub async fn run_evaluation(
 			let results = Arc::clone(&results);
 			let stats = Arc::clone(&stats);
 			let token_stats = Arc::clone(&token_stats);
-			let pb = pb.clone();
+			let counters = Arc::clone(&counters);
 			let result_path = result_path.clone();
 			let summary_path = summary_path.clone();
 			let system_prompt = system_prompt.clone();
@@ -270,7 +313,7 @@ pub async fn run_evaluation(
 					Ok(resp) => resp,
 					Err(e) => {
 						eprintln!("Error for question {}: {}", question.question_id, e);
-						pb.inc(1);
+						counters.completed.fetch_add(1, Ordering::Relaxed);
 						return;
 					}
 				};
@@ -293,7 +336,7 @@ pub async fn run_evaluation(
 
 				if verbosity >= 2 {
 					eprintln!(
-						"\nQ{}: pred={:?} answer={} | {}",
+						"Q{}: pred={:?} answer={} | {}",
 						question.question_id,
 						pred_str,
 						question.answer,
@@ -331,16 +374,29 @@ pub async fn run_evaluation(
 				{
 					let mut s = stats.lock().await;
 					match &pred_str {
-						Some(p) if p == &question.answer => s.correct += 1,
-						Some(_) => s.wrong += 1,
+						Some(p) if p == &question.answer => {
+							s.correct += 1;
+							counters.correct.fetch_add(1, Ordering::Relaxed);
+						}
+						Some(_) => {
+							s.wrong += 1;
+							counters.wrong.fetch_add(1, Ordering::Relaxed);
+						}
 						None => {
 							s.wrong += 1;
 							s.extraction_failures += 1;
-							if verbosity >= 1 {
+							counters.wrong.fetch_add(1, Ordering::Relaxed);
+							counters.extraction_failures.fetch_add(1, Ordering::Relaxed);
+							if verbosity >= 2 {
+								// Show the tail of the response where the answer should be
+								let tail = if result.response.len() > 300 {
+									format!("...{}", &result.response[result.response.len() - 300..])
+								} else {
+									result.response.clone()
+								};
 								eprintln!(
-									"Extraction failed for question {}: {}",
-									question.question_id,
-									&result.response[..result.response.len().min(200)]
+									"Extraction failed for Q{}: «{}»",
+									question.question_id, tail
 								);
 							}
 						}
@@ -367,21 +423,7 @@ pub async fn run_evaluation(
 					let _ = save_summary(&summary_stats, &summary_path);
 				}
 
-				// Update progress bar
-				{
-					let s = stats.lock().await;
-					let total = s.correct + s.wrong;
-					let acc = if total > 0 {
-						s.correct as f64 / total as f64 * 100.0
-					} else {
-						0.0
-					};
-					pb.set_message(format!(
-						"Correct: {} Wrong: {} Accuracy: {:.2}%",
-						s.correct, s.wrong, acc
-					));
-				}
-				pb.inc(1);
+				counters.completed.fetch_add(1, Ordering::Relaxed);
 			});
 
 			handles.push(handle);
@@ -392,7 +434,11 @@ pub async fn run_evaluation(
 			let _ = handle.await;
 		}
 
-		pb.finish();
+		// Stop the status printer
+		status_handle.abort();
+
+		// Print final status for this category
+		print_status(category, &counters, cat_start);
 
 		// Collect final stats
 		let final_stats = stats.lock().await.clone();
@@ -410,17 +456,6 @@ pub async fn run_evaluation(
 			summary_stats.insert(category.clone(), final_stats.clone());
 			save_summary(&summary_stats, &summary_path)?;
 		}
-
-		let total = final_stats.correct + final_stats.wrong;
-		let acc = if total > 0 {
-			final_stats.correct as f64 / total as f64 * 100.0
-		} else {
-			0.0
-		};
-		eprintln!(
-			"{}: {}/{} correct ({:.2}%), {} extraction failures",
-			category, final_stats.correct, total, acc, final_stats.extraction_failures
-		);
 
 		all_token_stats
 			.prompt_tokens
