@@ -20,7 +20,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.4", features = ["derive"] }
 arrow = { version = "54", default-features = false, features = ["prettyprint"] }
 futures = "0.3"
-hf-hub = { version = "0.4", features = ["tokio"] }
+hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls"] }
 humantime = "2.1"
 log = "0.4"
 metriken = "0.7"
