@@ -54,6 +54,7 @@ section = "net"
 priority = "optional"
 assets = [
     ["target/release/llm-bench", "usr/bin/", "755"],
+    ["target/release/mmlu-pro", "usr/bin/", "755"],
     ["examples/config.example.toml", "etc/llm-bench/config.toml.example", "644"],
 ]
 
@@ -61,5 +62,6 @@ assets = [
 name = "llm-bench"
 assets = [
     { source = "target/release/llm-bench", dest = "/usr/bin/llm-bench", mode = "0755" },
+    { source = "target/release/mmlu-pro", dest = "/usr/bin/mmlu-pro", mode = "0755" },
     { source = "examples/config.example.toml", dest = "/etc/llm-bench/config.toml.example", mode = "0644", config = true },
 ]
