@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-03-01
+
+### Bug Fixes
+
+- Add mmlu-pro binary to deb and rpm packaging
+
 ## [0.1.7] - 2026-03-01
 
 ### Changes
