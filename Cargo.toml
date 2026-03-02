@@ -1,6 +1,6 @@
 [package]
 name = "llm-bench"
-version = "0.1.6-alpha.0"
+version = "0.1.6"
 edition = "2024"
 authors = ["Brian Martin <brayniac@gmail.com>"]
 description = "A benchmarking tool for OpenAI-compatible LLM servers"

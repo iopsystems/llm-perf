@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-03-01
+
+### Features
+
+- Add MMLU-Pro benchmark test support
+
+### Infrastructure
+
+- Use prebuilt cargo-audit binary in CI
+- Gitignore generated prompt files
+- Add PR skill and update release skill for fork workflow
+
 ## [0.1.5] - 2026-02-27
 
 ### Bug Fixes
