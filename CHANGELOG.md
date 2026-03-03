@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-03-03
+
+### Features
+
+- Add `logprobs` subcommand for sequential token-level log probability collection (one request at a time, no concurrent load) to avoid GPU batching non-determinism
+- Add `kl-divergence` subcommand to compare token probability distributions between two logprob JSONL captures
+- Add logprobs streaming support to OpenAI client (TokenLogprob, TopLogprob, ChoiceLogprobs types)
+- Add CLI subcommand architecture with backward-compatible config file argument
+
 ## [0.1.8] - 2026-03-01
 
 ### Bug Fixes
