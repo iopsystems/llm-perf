@@ -1,6 +1,7 @@
 use anyhow::Result;
+use llm_bench::cli::Command;
 use llm_bench::{Cli, Config};
-use log::{LevelFilter, Metadata, Record, debug, info};
+use log::{LevelFilter, Metadata, Record, debug, info, warn};
 use ringlog::{File, LogBuilder, MultiLogBuilder, Output, Stderr};
 use std::collections::HashMap;
 use std::io::Write;
@@ -76,8 +77,26 @@ fn main() -> Result<()> {
     // Parse CLI arguments
     let cli = Cli::parse_args();
 
+    match cli.command {
+        Command::Bench { ref config } => run_bench_mode(config),
+        Command::Logprobs { ref config } => run_logprobs_mode(config),
+        Command::KlDivergence {
+            ref baseline,
+            ref candidate,
+            ref format,
+            ref output,
+        } => llm_bench::kl_divergence::run_kl_divergence(
+            baseline,
+            candidate,
+            format,
+            output.as_deref(),
+        ),
+    }
+}
+
+fn run_bench_mode(config_path: &std::path::Path) -> Result<()> {
     // Load configuration first to check verbosity setting
-    let config = Config::load(&cli.config)?;
+    let config = Config::load(&config_path.to_path_buf())?;
 
     // Set up logging with ringlog and per-module filtering
     let log_level = config.log.level.to_level_filter();
@@ -123,7 +142,7 @@ fn main() -> Result<()> {
     // Print clean startup message
     if !config.output.quiet {
         println!("LLM Benchmark Tool");
-        println!("   Config: {}", cli.config.display());
+        println!("   Config: {}", config_path.display());
         println!("   Target: {}", config.endpoint.base_url);
 
         if let Some(qps) = config.load.qps {
@@ -174,5 +193,199 @@ async fn run_benchmark(config: Config) -> Result<()> {
     info!("Starting benchmark run");
     runner.run().await?;
     info!("Benchmark completed successfully");
+    Ok(())
+}
+
+fn run_logprobs_mode(config_path: &std::path::Path) -> Result<()> {
+    let config = Config::load(&config_path.to_path_buf())?;
+
+    // Require [logprobs] section
+    let lp_config = config
+        .logprobs
+        .as_ref()
+        .filter(|lp| lp.enabled)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "The logprobs subcommand requires a [logprobs] section with enabled = true in the config"
+            )
+        })?
+        .clone();
+
+    // Set up logging (reuse bench mode pattern)
+    let log_level = config.log.level.to_level_filter();
+
+    let output: Box<dyn Output> = if let Some(ref log_file) = config.output.trace_log {
+        let backup_file = log_file.with_extension("old");
+        Box::new(File::new(log_file.clone(), backup_file, LOG_FILE_MAX_SIZE)?)
+    } else {
+        Box::new(Stderr::new())
+    };
+
+    let filters = parse_log_filters(&config.log.filter);
+
+    if filters.is_empty() {
+        let base_log = LogBuilder::new()
+            .output(output)
+            .build()
+            .expect("failed to initialize logger");
+
+        let _drain = MultiLogBuilder::new()
+            .level_filter(log_level)
+            .default(base_log)
+            .build()
+            .start();
+    } else {
+        let logger = FilteredLogger {
+            output: Mutex::new(output),
+            max_level: log_level,
+            filters,
+        };
+
+        log::set_boxed_logger(Box::new(logger)).expect("failed to set logger");
+        log::set_max_level(log_level);
+    }
+
+    if !config.output.quiet {
+        println!("LLM Logprobs Collection");
+        println!("   Config: {}", config_path.display());
+        println!("   Target: {}", config.endpoint.base_url);
+        println!("   Top logprobs: {}", lp_config.top_logprobs);
+        println!("   Output: {}", lp_config.output.display());
+        println!();
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(run_logprobs_collection(config, lp_config))
+}
+
+async fn run_logprobs_collection(
+    config: Config,
+    lp_config: llm_bench::config::LogprobsConfig,
+) -> Result<()> {
+    use llm_bench::benchmark::Prompt;
+    use llm_bench::logprobs::{LogprobRecord, LogprobWriter};
+    use tokio::io::AsyncBufReadExt;
+
+    // Wait for server readiness if configured
+    if config.endpoint.health_check_timeout > 0 {
+        llm_bench::client::check_server_ready(
+            &config.endpoint.base_url,
+            config.endpoint.api_key.as_deref(),
+            std::time::Duration::from_secs(config.endpoint.health_check_timeout),
+            std::time::Duration::from_secs(config.endpoint.health_check_interval),
+        )
+        .await?;
+    }
+
+    // Detect model
+    let model = if let Some(model) = config.endpoint.model.clone() {
+        model
+    } else {
+        info!("Model not specified, querying server for available models");
+        llm_bench::client::detect_model(
+            &config.endpoint.base_url,
+            config.endpoint.api_key.as_deref(),
+            std::time::Duration::from_secs(config.endpoint.timeout),
+        )
+        .await?
+    };
+
+    // Create client with pool_size=1 (sequential)
+    let client = llm_bench::OpenAIClient::new(llm_bench::ClientConfig {
+        base_url: config.endpoint.base_url.clone(),
+        api_key: config.endpoint.api_key.clone(),
+        model,
+        timeout: std::time::Duration::from_secs(config.endpoint.timeout),
+        max_retries: config.endpoint.max_retries,
+        retry_initial_delay_ms: config.endpoint.retry_initial_delay_ms,
+        retry_max_delay_ms: config.endpoint.retry_max_delay_ms,
+        pool_size: 1,
+    })?;
+
+    // Load prompts
+    let file = tokio::fs::File::open(&config.input.file).await?;
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = reader.lines();
+    let mut prompts: Vec<Prompt> = Vec::new();
+
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Prompt>(&line) {
+            Ok(prompt) => prompts.push(prompt),
+            Err(e) => warn!("Failed to parse prompt line: {}", e),
+        }
+    }
+
+    if let Some(sample_size) = config.input.sample_size {
+        prompts.truncate(sample_size);
+    }
+
+    info!("Loaded {} prompts", prompts.len());
+
+    // Set up writer channel
+    let (tx, writer) = LogprobWriter::new(lp_config.output.clone(), 256);
+    let writer_handle = tokio::spawn(async move {
+        if let Err(e) = writer.run().await {
+            log::error!("Logprob writer error: {}", e);
+        }
+    });
+
+    // Process prompts sequentially
+    let total = prompts.len();
+    for (idx, prompt) in prompts.iter().enumerate() {
+        debug!("Processing prompt {}/{}", idx + 1, total);
+
+        let request = client.create_request(
+            &prompt.prompt,
+            prompt.max_tokens,
+            Some(true),
+            Some(lp_config.top_logprobs),
+        );
+
+        match client.chat_completion_stream(request).await {
+            Ok(mut stream) => {
+                // Consume the stream
+                while let Some(_chunk) = stream.next_chunk().await? {}
+
+                let collected = stream.logprobs();
+                if !collected.is_empty() {
+                    let record = LogprobRecord {
+                        prompt_index: idx,
+                        prompt: prompt.prompt.clone(),
+                        tokens: collected.to_vec(),
+                    };
+                    if let Err(e) = tx.send(record).await {
+                        warn!("Failed to send logprob record: {}", e);
+                    }
+                } else {
+                    warn!("No logprobs returned for prompt {}", idx);
+                }
+            }
+            Err(e) => {
+                warn!("Request failed for prompt {}: {}", idx, e);
+            }
+        }
+
+        if !config.output.quiet && (idx + 1) % 10 == 0 {
+            println!("   Progress: {}/{} prompts", idx + 1, total);
+        }
+    }
+
+    // Close sender to signal writer to finish
+    drop(tx);
+    let _ = writer_handle.await;
+
+    if !config.output.quiet {
+        println!();
+        println!("Logprobs collection complete");
+        println!("   Prompts processed: {}", total);
+        println!("   Output: {}", lp_config.output.display());
+    }
+
     Ok(())
 }

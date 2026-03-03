@@ -4,6 +4,8 @@ pub mod cli;
 pub mod client;
 pub mod config;
 pub mod distribution;
+pub mod kl_divergence;
+pub mod logprobs;
 pub mod metrics;
 pub mod report;
 pub mod snapshot;

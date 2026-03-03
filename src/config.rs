@@ -15,6 +15,8 @@ pub struct Config {
     pub metrics: Option<MetricsConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub admin: Option<AdminConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<LogprobsConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +151,22 @@ pub struct AdminConfig {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogprobsConfig {
+    /// Whether to request logprobs from the server
+    #[serde(default)]
+    pub enabled: bool,
+    /// Number of top token log probabilities to request (1-20)
+    #[serde(default = "default_top_logprobs")]
+    pub top_logprobs: u8,
+    /// Path to write logprobs JSONL output
+    pub output: PathBuf,
+}
+
+fn default_top_logprobs() -> u8 {
+    5
+}
+
 impl Default for AdminConfig {
     fn default() -> Self {
         Self {
@@ -253,6 +271,13 @@ impl Config {
 
         if self.runtime.worker_threads == 0 {
             anyhow::bail!("worker_threads must be greater than 0");
+        }
+
+        if let Some(ref logprobs) = self.logprobs
+            && logprobs.enabled
+            && (logprobs.top_logprobs == 0 || logprobs.top_logprobs > 20)
+        {
+            anyhow::bail!("logprobs.top_logprobs must be between 1 and 20");
         }
 
         Ok(())

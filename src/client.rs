@@ -58,6 +58,10 @@ pub struct ChatCompletionRequest {
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +118,8 @@ pub struct StreamChoice {
     pub index: u32,
     pub delta: Delta,
     pub finish_reason: Option<String>,
+    #[serde(default)]
+    pub logprobs: Option<ChoiceLogprobs>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -122,6 +128,28 @@ pub struct Delta {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+}
+
+/// Top log probability for a single token alternative
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopLogprob {
+    pub token: String,
+    pub logprob: f64,
+}
+
+/// Log probability information for a single generated token
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenLogprob {
+    pub token: String,
+    pub logprob: f64,
+    #[serde(default)]
+    pub top_logprobs: Vec<TopLogprob>,
+}
+
+/// Log probability information for a choice in a streaming response
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChoiceLogprobs {
+    pub content: Option<Vec<TokenLogprob>>,
 }
 
 // Models list response
@@ -235,7 +263,13 @@ impl OpenAIClient {
         Ok(completion)
     }
 
-    pub fn create_request(&self, prompt: &str, max_tokens: Option<u32>) -> ChatCompletionRequest {
+    pub fn create_request(
+        &self,
+        prompt: &str,
+        max_tokens: Option<u32>,
+        logprobs: Option<bool>,
+        top_logprobs: Option<u8>,
+    ) -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: self.model.clone(),
             messages: vec![Message {
@@ -250,6 +284,8 @@ impl OpenAIClient {
             stop: None,
             stream: Some(false),
             stream_options: None,
+            logprobs,
+            top_logprobs,
         }
     }
 
@@ -385,6 +421,7 @@ impl OpenAIClient {
             partial_line: String::new(),
             done: false,
             server_usage: None,
+            collected_logprobs: Vec::new(),
         })
     }
 
@@ -438,6 +475,8 @@ pub struct StreamResponse {
     done: bool,
     /// Server-reported token usage from the final streaming chunk
     server_usage: Option<Usage>,
+    /// Accumulated logprobs from streaming chunks
+    collected_logprobs: Vec<TokenLogprob>,
 }
 
 impl StreamResponse {
@@ -515,6 +554,15 @@ impl StreamResponse {
             self.server_usage = Some(usage.clone());
         }
 
+        // Accumulate logprobs from chunk
+        for choice in &chunk.choices {
+            if let Some(ref lp) = choice.logprobs
+                && let Some(ref content) = lp.content
+            {
+                self.collected_logprobs.extend(content.iter().cloned());
+            }
+        }
+
         let has_content = chunk.choices.iter().any(|c| c.delta.content.is_some());
 
         if has_content {
@@ -555,6 +603,11 @@ impl StreamResponse {
     /// Server-reported token usage, if the server supports stream_options.include_usage
     pub fn server_usage(&self) -> Option<&Usage> {
         self.server_usage.as_ref()
+    }
+
+    /// Collected logprobs from the streaming response
+    pub fn logprobs(&self) -> &[TokenLogprob] {
+        &self.collected_logprobs
     }
 }
 

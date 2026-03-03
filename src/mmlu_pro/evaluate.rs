@@ -314,6 +314,8 @@ pub async fn run_evaluation(
                     stop: Some(vec!["Question:".to_string()]),
                     stream: Some(false),
                     stream_options: None,
+                    logprobs: None,
+                    top_logprobs: None,
                 };
 
                 let response = match client.chat_completion(request).await {

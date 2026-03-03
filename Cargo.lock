@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "addr2line"
-version = "0.1.9-alpha.0"
+version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfbe277e56a376000877090da837660b4427aad530e3028d44e0bffe4f89a1c1"
 dependencies = [
@@ -1617,7 +1617,7 @@ checksum = "241eaef5fd12c88705a01fc1066c48c4b36e0dd4377dcdc7ec3942cea7a69956"
 
 [[package]]
 name = "llm-bench"
-version = "0.1.8"
+version = "0.1.9-alpha.0"
 dependencies = [
  "anyhow",
  "arrow",

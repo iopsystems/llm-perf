@@ -178,6 +178,19 @@ level = "info"
 # listen = "127.0.0.1:9090"
 
 # =============================================================================
+# Logprobs Configuration (Optional)
+# =============================================================================
+# Capture token-level log probabilities during benchmark runs.
+# Useful for comparing quantized models via KL divergence analysis.
+# Usage: Run benchmarks with logprobs enabled, then compare with:
+#   llm-bench kl-divergence baseline.jsonl candidate.jsonl
+#
+# [logprobs]
+# enabled = true
+# top_logprobs = 5       # Number of top token probabilities to capture (1-20)
+# output = "logprobs.jsonl"  # Path to write JSONL output
+
+# =============================================================================
 # Common Configuration Patterns
 # =============================================================================
 

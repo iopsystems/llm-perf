@@ -817,7 +817,7 @@ impl BenchmarkRunner {
 
         // Add per-request cache-busting to ensure every request is unique
         let cache_bust_prompt = format!("[req-{}] {}", index, prompt.prompt);
-        let request = client.create_request(&cache_bust_prompt, prompt.max_tokens);
+        let request = client.create_request(&cache_bust_prompt, prompt.max_tokens, None, None);
 
         match client.chat_completion_stream(request).await {
             Ok(mut stream) => {
