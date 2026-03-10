@@ -1,4 +1,4 @@
-# llm-bench
+# llm-perf
 
 A high-performance benchmarking tool for OpenAI-compatible LLM inference servers. Designed to measure detailed performance characteristics of local LLM servers like llama-server, vLLM, TGI, and other OpenAI API-compatible endpoints.
 
@@ -108,13 +108,13 @@ Automatically categorizes TTFT by input context size:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/llm-bench.git
-cd llm-bench
+git clone https://github.com/yourusername/llm-perf.git
+cd llm-perf
 
 # Build in release mode (recommended for benchmarking)
 cargo build --release
 
-# Binary will be at ./target/release/llm-bench
+# Binary will be at ./target/release/llm-perf
 ```
 
 ### Prerequisites
@@ -134,7 +134,7 @@ cp examples/config.example.toml my-config.toml
 vim my-config.toml
 
 # Run benchmark
-./llm-bench my-config.toml
+./llm-perf my-config.toml
 ```
 
 ### Configuration
@@ -344,10 +344,10 @@ format = "json"
 
 ```bash
 # Example: Extract request rate
-llm-bench config.toml | jq '.throughput.requests_per_second'
+llm-perf config.toml | jq '.throughput.requests_per_second'
 
 # Example: Filter errors
-llm-bench config.toml | jq '.errors'
+llm-perf config.toml | jq '.errors'
 ```
 
 **JSON Report Structure:**
@@ -464,7 +464,7 @@ cargo build --release
 ### Project Structure
 
 ```
-llm-bench/
+llm-perf/
 ├── src/
 │   ├── main.rs           # Entry point and runtime setup
 │   ├── benchmark.rs      # Core benchmarking logic
@@ -484,7 +484,7 @@ llm-bench/
 
 ## Future Enhancements
 
-llm-bench is production-ready with all core benchmarking features implemented. Potential future enhancements:
+llm-perf is production-ready with all core benchmarking features implemented. Potential future enhancements:
 
 - **Worker Ramp-up Control**: Gradual worker spawning to avoid thundering herd on very large scale tests
 - **Custom Headers**: Additional HTTP header support if authentication schemes require it

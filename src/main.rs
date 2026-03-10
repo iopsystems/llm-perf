@@ -1,6 +1,6 @@
 use anyhow::Result;
-use llm_bench::cli::Command;
-use llm_bench::{Cli, Config};
+use llm_perf::cli::Command;
+use llm_perf::{Cli, Config};
 use log::{LevelFilter, Metadata, Record, debug, info, warn};
 use ringlog::{File, LogBuilder, MultiLogBuilder, Output, Stderr};
 use std::collections::HashMap;
@@ -85,7 +85,7 @@ fn main() -> Result<()> {
             ref candidate,
             ref format,
             ref output,
-        } => llm_bench::kl_divergence::run_kl_divergence(
+        } => llm_perf::kl_divergence::run_kl_divergence(
             baseline,
             candidate,
             format,
@@ -184,12 +184,12 @@ async fn run_benchmark(config: Config) -> Result<()> {
 
         info!("Starting metrics server on {}", addr);
         tokio::spawn(async move {
-            llm_bench::admin::start_server(addr).await;
+            llm_perf::admin::start_server(addr).await;
         });
     }
 
     debug!("Initializing benchmark runner");
-    let runner = llm_bench::BenchmarkRunner::new(config).await?;
+    let runner = llm_perf::BenchmarkRunner::new(config).await?;
     info!("Starting benchmark run");
     runner.run().await?;
     info!("Benchmark completed successfully");
@@ -263,15 +263,15 @@ fn run_logprobs_mode(config_path: &std::path::Path) -> Result<()> {
 
 async fn run_logprobs_collection(
     config: Config,
-    lp_config: llm_bench::config::LogprobsConfig,
+    lp_config: llm_perf::config::LogprobsConfig,
 ) -> Result<()> {
-    use llm_bench::benchmark::Prompt;
-    use llm_bench::logprobs::{LogprobRecord, LogprobWriter};
+    use llm_perf::benchmark::Prompt;
+    use llm_perf::logprobs::{LogprobRecord, LogprobWriter};
     use tokio::io::AsyncBufReadExt;
 
     // Wait for server readiness if configured
     if config.endpoint.health_check_timeout > 0 {
-        llm_bench::client::check_server_ready(
+        llm_perf::client::check_server_ready(
             &config.endpoint.base_url,
             config.endpoint.api_key.as_deref(),
             std::time::Duration::from_secs(config.endpoint.health_check_timeout),
@@ -285,7 +285,7 @@ async fn run_logprobs_collection(
         model
     } else {
         info!("Model not specified, querying server for available models");
-        llm_bench::client::detect_model(
+        llm_perf::client::detect_model(
             &config.endpoint.base_url,
             config.endpoint.api_key.as_deref(),
             std::time::Duration::from_secs(config.endpoint.timeout),
@@ -294,7 +294,7 @@ async fn run_logprobs_collection(
     };
 
     // Create client with pool_size=1 (sequential)
-    let client = llm_bench::OpenAIClient::new(llm_bench::ClientConfig {
+    let client = llm_perf::OpenAIClient::new(llm_perf::ClientConfig {
         base_url: config.endpoint.base_url.clone(),
         api_key: config.endpoint.api_key.clone(),
         model,

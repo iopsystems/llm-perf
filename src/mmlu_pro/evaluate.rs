@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 use tokio::sync::Semaphore;
 
-use llm_bench::client::{ChatCompletionRequest, ClientConfig, OpenAIClient};
+use llm_perf::client::{ChatCompletionRequest, ClientConfig, OpenAIClient};
 
 use super::config::Config;
 use super::dataset::Question;

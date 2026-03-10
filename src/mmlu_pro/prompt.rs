@@ -1,4 +1,4 @@
-use llm_bench::client::Message;
+use llm_perf::client::Message;
 
 use super::dataset::Question;
 

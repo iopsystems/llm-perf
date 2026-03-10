@@ -1,6 +1,6 @@
 ---
 name: pr
-description: Create a feature branch, commit changes, push, and open a PR against iopsystems/llm-bench
+description: Create a feature branch, commit changes, push, and open a PR against iopsystems/llm-perf
 ---
 
 Create a PR from the current uncommitted changes. Handles branching, committing, pushing, and opening the PR against the upstream repo.
@@ -52,13 +52,13 @@ The skill accepts an optional branch name argument:
    ```
 
 6. **Open PR against upstream**:
-   - The upstream repo is `iopsystems/llm-bench`
+   - The upstream repo is `iopsystems/llm-perf`
    - The fork remote is `origin` (determine the owner from `git remote -v`)
-   - Use `gh pr create` with `--repo iopsystems/llm-bench` and `--head <fork-owner>:<branch-name>`
+   - Use `gh pr create` with `--repo iopsystems/llm-perf` and `--head <fork-owner>:<branch-name>`
 
    ```bash
    gh pr create \
-     --repo iopsystems/llm-bench \
+     --repo iopsystems/llm-perf \
      --head <fork-owner>:<branch-name> \
      --title "<conventional commit style title>" \
      --body "$(cat <<'EOF'
@@ -81,4 +81,4 @@ The skill accepts an optional branch name argument:
 - PR title should follow the same conventional commit format as the commit message
 - If `cargo clippy`, `cargo test`, or `cargo fmt --check` haven't been run yet during this session, run them before committing
 - Never force push or amend existing commits
-- The fork owner can be determined from the origin remote URL (e.g., `git@github.com:brayniac/llm-bench` -> `brayniac`)
+- The fork owner can be determined from the origin remote URL (e.g., `git@github.com:brayniac/llm-perf` -> `brayniac`)

@@ -1,4 +1,4 @@
-# llm-bench Configuration Example
+# llm-perf Configuration Example
 # This file demonstrates all available configuration options.
 # Copy this file and uncomment/modify options as needed for your use case.
 
@@ -10,7 +10,7 @@
 base_url = "http://localhost:8080/v1"
 
 # Model name to use for requests
-# If omitted, llm-bench will query the /v1/models endpoint to auto-detect
+# If omitted, llm-perf will query the /v1/models endpoint to auto-detect
 # Example: "llama-3.1-8b-instruct", "gpt-4", etc.
 # model = "llama-3.1-8b-instruct"
 
@@ -39,8 +39,8 @@ timeout = 60
 
 # Server Readiness Check Configuration (Optional)
 # IMPORTANT: Readiness check is DISABLED by default (health_check_timeout = 0)
-# When enabled, llm-bench polls /v1/models until the server is ready
-# Useful when starting the server and llm-bench simultaneously (e.g., vLLM loading models)
+# When enabled, llm-perf polls /v1/models until the server is ready
+# Useful when starting the server and llm-perf simultaneously (e.g., vLLM loading models)
 # Works with all OpenAI-compatible backends since /v1/models is required by the spec
 
 # Maximum time to wait for server to become ready (in seconds)
@@ -183,7 +183,7 @@ level = "info"
 # Capture token-level log probabilities during benchmark runs.
 # Useful for comparing quantized models via KL divergence analysis.
 # Usage: Run benchmarks with logprobs enabled, then compare with:
-#   llm-bench kl-divergence baseline.jsonl candidate.jsonl
+#   llm-perf kl-divergence baseline.jsonl candidate.jsonl
 #
 # [logprobs]
 # enabled = true

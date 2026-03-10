@@ -85,14 +85,14 @@ Example: `/release minor`
    ```
 
 8. **Push and create PR**:
-   - The upstream repo is `iopsystems/llm-bench`
+   - The upstream repo is `iopsystems/llm-perf`
    - The fork remote is `origin` (determine the owner from `git remote -v`)
 
    ```bash
    git push -u origin release/v${NEW_VERSION}
 
    gh pr create \
-     --repo iopsystems/llm-bench \
+     --repo iopsystems/llm-perf \
      --head <fork-owner>:release/v${NEW_VERSION} \
      --title "release: v${NEW_VERSION}" \
      --body "$(cat <<'EOF'

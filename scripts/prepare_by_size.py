@@ -155,7 +155,7 @@ def write_prompt_files(size_buckets: dict, output_dir: Path, shuffle: bool = Tru
 
         with open(output_file, 'w') as f:
             for sample in samples:
-                # Write in llm-bench format (simple prompt + max_tokens)
+                # Write in llm-perf format (simple prompt + max_tokens)
                 # max_tokens already calculated based on response length (1.5x response tokens)
                 entry = {
                     "prompt": sample['prompt'],

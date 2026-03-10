@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`llm-bench` is a benchmarking tool for OpenAI-compatible LLM servers. It's designed to measure performance characteristics of local LLM inference servers like llama-server, vLLM, TGI, etc. The project uses Rust edition 2024 with async/await via Tokio.
+`llm-perf` is a benchmarking tool for OpenAI-compatible LLM servers. It's designed to measure performance characteristics of local LLM inference servers like llama-server, vLLM, TGI, etc. The project uses Rust edition 2024 with async/await via Tokio.
 
 ## Common Development Commands
 
@@ -21,7 +21,7 @@ cargo run -- config.example.toml
 ### Build in release mode (recommended for benchmarking)
 ```bash
 cargo build --release
-./target/release/llm-bench config.toml
+./target/release/llm-perf config.toml
 ```
 
 ### Run tests

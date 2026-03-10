@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "llm-bench")]
+#[command(name = "llm-perf")]
 #[command(author, version, about = "Benchmark OpenAI-compatible LLM servers", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]

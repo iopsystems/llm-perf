@@ -34,7 +34,7 @@ python scripts/prepare_dataset.py --output-dir my_datasets
 3. Estimates appropriate `max_tokens` based on reference response length
 4. Generates `openorca-{N}.jsonl` file (e.g., `openorca-10000.jsonl` for 10,000 samples)
 
-Use llm-bench's `sample_size` config parameter for quick testing with fewer prompts.
+Use llm-perf's `sample_size` config parameter for quick testing with fewer prompts.
 
 ### Output format
 

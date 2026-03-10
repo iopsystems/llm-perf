@@ -201,7 +201,7 @@ impl OpenAIClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use llm_bench::client::{OpenAIClient, ClientConfig};
+    /// use llm_perf::client::{OpenAIClient, ClientConfig};
     /// use std::time::Duration;
     ///
     /// let config = ClientConfig {
@@ -614,8 +614,8 @@ impl StreamResponse {
 /// Wait for server to become ready by polling /v1/models endpoint
 ///
 /// This function polls the /v1/models endpoint until it returns a successful response
-/// or the timeout is exceeded. This is useful when starting a server and llm-bench
-/// simultaneously, allowing llm-bench to wait for the server to be ready.
+/// or the timeout is exceeded. This is useful when starting a server and llm-perf
+/// simultaneously, allowing llm-perf to wait for the server to be ready.
 ///
 /// Using /v1/models is better than a dedicated health endpoint because:
 /// - All OpenAI-compatible backends must support it

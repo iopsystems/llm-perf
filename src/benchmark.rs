@@ -44,7 +44,7 @@ pub struct Prompt {
 /// # Examples
 ///
 /// ```no_run
-/// use llm_bench::{BenchmarkRunner, Config};
+/// use llm_perf::{BenchmarkRunner, Config};
 ///
 /// #[tokio::main]
 /// async fn main() -> anyhow::Result<()> {
@@ -85,7 +85,7 @@ impl BenchmarkRunner {
     /// # Examples
     ///
     /// ```no_run
-    /// use llm_bench::{BenchmarkRunner, Config};
+    /// use llm_perf::{BenchmarkRunner, Config};
     ///
     /// # async fn example() -> anyhow::Result<()> {
     /// let config = Config::load(&"config.toml".into())?;
@@ -208,7 +208,7 @@ impl BenchmarkRunner {
     /// # Examples
     ///
     /// ```no_run
-    /// # use llm_bench::{BenchmarkRunner, Config};
+    /// # use llm_perf::{BenchmarkRunner, Config};
     /// # async fn example() -> anyhow::Result<()> {
     /// let config = Config::load(&"config.toml".into())?;
     /// let runner = BenchmarkRunner::new(config).await?;
