@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changes
+
+- Rename project from llm-bench to llm-perf
+- Upgrade reqwest from 0.11 to 0.12, removing duplicate dependency and unmaintained rustls-pemfile
+- Update quinn-proto to 0.11.14 to fix RUSTSEC-2026-0037
+- Remove dead snapshotter code from stats module
+- Fix basic.toml scenario missing /v1 path in base_url
+- Update README to match actual output format and document logprobs/kl-divergence subcommands
+- Update CLAUDE.md project structure to reflect current codebase
+
 ## [0.1.9] - 2026-03-03
 
 ### Features

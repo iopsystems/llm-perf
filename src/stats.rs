@@ -1,6 +1,5 @@
 use chrono::{Timelike, Utc};
 use metriken::histogram::Histogram;
-use metriken_exposition::SnapshotterBuilder;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -90,9 +89,6 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         Duration::from_secs(60)
     };
 
-    // Build snapshotter for reading metrics (not used but kept for compatibility)
-    let snapshotter = SnapshotterBuilder::new().build();
-
     // Wait for warmup to complete before starting stats intervals
     warmup_complete.notified().await;
 
@@ -118,9 +114,6 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         {
             continue;
         }
-
-        // Take a snapshot for reading current values
-        let _snapshot = snapshotter.snapshot();
 
         // Get current values
         let current_requests_sent = REQUESTS_SENT.value();

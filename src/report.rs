@@ -170,8 +170,6 @@ impl ReportBuilder {
             end_time.duration_since(self.start_time)?
         };
 
-        // Access metrics directly for now
-        // In production, we'd use metriken-exposition properly
         use crate::metrics::{
             ERRORS_CONNECTION, ERRORS_HTTP_4XX, ERRORS_HTTP_5XX, ERRORS_OTHER, REQUESTS_FAILED,
             REQUESTS_RETRIED, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT, TOKENS_INPUT,
