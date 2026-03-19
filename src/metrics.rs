@@ -1,4 +1,6 @@
-use metriken::{AtomicHistogram, Counter, Format, Gauge, LazyCounter, LazyGauge, MetricEntry, metric};
+use metriken::{
+    AtomicHistogram, Counter, Format, Gauge, LazyCounter, LazyGauge, MetricEntry, metric,
+};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
