@@ -848,13 +848,6 @@ impl BenchmarkRunner {
                     // Record metrics
                     if let Some(ttft) = stream.time_to_first_token() {
                         Metrics::record_ttft_with_context(ttft, input_tokens);
-                    } else {
-                        log::debug!(
-                            "Request {} had no TTFT (output_tokens={}, content_len={})",
-                            index,
-                            output_tokens,
-                            total_content.len()
-                        );
                     }
 
                     // Record inter-token latencies with context awareness
