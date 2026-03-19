@@ -1,41 +1,6 @@
-use metriken::{
-    AtomicHistogram, Counter, Format, Gauge, LazyCounter, LazyGauge, MetricEntry, metric,
-};
+use metriken::{AtomicHistogram, Counter, Gauge, LazyCounter, LazyGauge, metric};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
-
-/// Canonical metric formatter that produces unique names from metadata labels.
-///
-/// For `Format::Simple`, appends metadata label values (sorted by key) to the
-/// metric name with `_` separators, skipping structural metadata like `unit`.
-/// This ensures metrics with the same name but different labels get unique
-/// column names in parquet output (e.g., `tokens_output`, `requests_sent`).
-///
-/// Uses `_` rather than `/` so names remain valid PromQL identifiers.
-///
-/// For `Format::Prometheus`, delegates to the default Prometheus format.
-fn canonical_formatter(metric: &MetricEntry, format: Format) -> String {
-    match format {
-        Format::Simple => {
-            let name = metric.name();
-            let mut labels: Vec<(&str, &str)> = metric
-                .metadata()
-                .iter()
-                .filter(|(k, _)| *k != "unit")
-                .collect();
-            labels.sort_by_key(|(k, _)| *k);
-
-            if labels.is_empty() {
-                name.to_string()
-            } else {
-                let suffix: Vec<&str> = labels.iter().map(|(_, v)| *v).collect();
-                format!("{}_{}", name, suffix.join("_"))
-            }
-        }
-        Format::Prometheus => metriken::default_formatter(metric, format),
-        _ => metric.name().to_string(),
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub enum RequestStatus {
@@ -57,47 +22,39 @@ pub enum ErrorType {
 // Global running flag for background tasks
 pub static RUNNING: AtomicBool = AtomicBool::new(false);
 
-// Make metrics accessible for reporting
-// In production, we'd use metriken-exposition properly
-
 // Request metrics
 #[metric(
     name = "requests",
     description = "Total number of requests",
-    metadata = { status = "sent" },
-    formatter = canonical_formatter
+    metadata = { status = "sent" }
 )]
 pub static REQUESTS_SENT: LazyCounter = LazyCounter::new(Counter::default);
 
 #[metric(
     name = "requests",
     description = "Successful requests",
-    metadata = { status = "success" },
-    formatter = canonical_formatter
+    metadata = { status = "success" }
 )]
 pub static REQUESTS_SUCCESS: LazyCounter = LazyCounter::new(Counter::default);
 
 #[metric(
     name = "requests",
     description = "Failed requests",
-    metadata = { status = "failed" },
-    formatter = canonical_formatter
+    metadata = { status = "failed" }
 )]
 pub static REQUESTS_FAILED: LazyCounter = LazyCounter::new(Counter::default);
 
 #[metric(
     name = "requests",
     description = "Timed out requests",
-    metadata = { status = "timeout" },
-    formatter = canonical_formatter
+    metadata = { status = "timeout" }
 )]
 pub static REQUESTS_TIMEOUT: LazyCounter = LazyCounter::new(Counter::default);
 
 #[metric(
     name = "requests",
     description = "Request retries",
-    metadata = { status = "retried" },
-    formatter = canonical_formatter
+    metadata = { status = "retried" }
 )]
 pub static REQUESTS_RETRIED: LazyCounter = LazyCounter::new(Counter::default);
 
@@ -105,40 +62,35 @@ pub static REQUESTS_RETRIED: LazyCounter = LazyCounter::new(Counter::default);
 #[metric(
     name = "errors",
     description = "Connection errors",
-    metadata = { "type" = "connection" },
-    formatter = canonical_formatter
+    metadata = { "type" = "connection" }
 )]
 pub static ERRORS_CONNECTION: LazyCounter = LazyCounter::new(Counter::default);
 
 #[metric(
     name = "errors",
     description = "HTTP 4xx errors",
-    metadata = { "type" = "http_4xx" },
-    formatter = canonical_formatter
+    metadata = { "type" = "http_4xx" }
 )]
 pub static ERRORS_HTTP_4XX: LazyCounter = LazyCounter::new(Counter::default);
 
 #[metric(
     name = "errors",
     description = "HTTP 5xx errors",
-    metadata = { "type" = "http_5xx" },
-    formatter = canonical_formatter
+    metadata = { "type" = "http_5xx" }
 )]
 pub static ERRORS_HTTP_5XX: LazyCounter = LazyCounter::new(Counter::default);
 
 #[metric(
     name = "errors",
     description = "Parse errors",
-    metadata = { "type" = "parse" },
-    formatter = canonical_formatter
+    metadata = { "type" = "parse" }
 )]
 pub static ERRORS_PARSE: LazyCounter = LazyCounter::new(Counter::default);
 
 #[metric(
     name = "errors",
     description = "Other errors",
-    metadata = { "type" = "other" },
-    formatter = canonical_formatter
+    metadata = { "type" = "other" }
 )]
 pub static ERRORS_OTHER: LazyCounter = LazyCounter::new(Counter::default);
 
@@ -146,16 +98,14 @@ pub static ERRORS_OTHER: LazyCounter = LazyCounter::new(Counter::default);
 #[metric(
     name = "tokens",
     description = "Input tokens processed",
-    metadata = { direction = "input" },
-    formatter = canonical_formatter
+    metadata = { direction = "input" }
 )]
 pub static TOKENS_INPUT: LazyCounter = LazyCounter::new(Counter::default);
 
 #[metric(
     name = "tokens",
     description = "Output tokens generated",
-    metadata = { direction = "output" },
-    formatter = canonical_formatter
+    metadata = { direction = "output" }
 )]
 pub static TOKENS_OUTPUT: LazyCounter = LazyCounter::new(Counter::default);
 
@@ -175,40 +125,35 @@ pub static REQUESTS_INFLIGHT: LazyGauge = LazyGauge::new(Gauge::default);
 #[metric(
     name = "ttft",
     description = "Time to first token in nanoseconds",
-    metadata = { unit = "nanoseconds", context_size = "small" },
-    formatter = canonical_formatter
+    metadata = { unit = "nanoseconds", context_size = "small" }
 )]
 pub static TTFT_SMALL: AtomicHistogram = AtomicHistogram::new(7, 64);
 
 #[metric(
     name = "ttft",
     description = "Time to first token in nanoseconds",
-    metadata = { unit = "nanoseconds", context_size = "medium" },
-    formatter = canonical_formatter
+    metadata = { unit = "nanoseconds", context_size = "medium" }
 )]
 pub static TTFT_MEDIUM: AtomicHistogram = AtomicHistogram::new(7, 64);
 
 #[metric(
     name = "ttft",
     description = "Time to first token in nanoseconds",
-    metadata = { unit = "nanoseconds", context_size = "large" },
-    formatter = canonical_formatter
+    metadata = { unit = "nanoseconds", context_size = "large" }
 )]
 pub static TTFT_LARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
 
 #[metric(
     name = "ttft",
     description = "Time to first token in nanoseconds",
-    metadata = { unit = "nanoseconds", context_size = "xlarge" },
-    formatter = canonical_formatter
+    metadata = { unit = "nanoseconds", context_size = "xlarge" }
 )]
 pub static TTFT_XLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
 
 #[metric(
     name = "ttft",
     description = "Time to first token in nanoseconds",
-    metadata = { unit = "nanoseconds", context_size = "xxlarge" },
-    formatter = canonical_formatter
+    metadata = { unit = "nanoseconds", context_size = "xxlarge" }
 )]
 pub static TTFT_XXLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
 
@@ -231,40 +176,35 @@ pub static TPOT: AtomicHistogram = AtomicHistogram::new(7, 64);
 #[metric(
     name = "itl",
     description = "Inter-token latency in nanoseconds",
-    metadata = { unit = "nanoseconds", context_size = "small" },
-    formatter = canonical_formatter
+    metadata = { unit = "nanoseconds", context_size = "small" }
 )]
 pub static ITL_SMALL: AtomicHistogram = AtomicHistogram::new(7, 64);
 
 #[metric(
     name = "itl",
     description = "Inter-token latency in nanoseconds",
-    metadata = { unit = "nanoseconds", context_size = "medium" },
-    formatter = canonical_formatter
+    metadata = { unit = "nanoseconds", context_size = "medium" }
 )]
 pub static ITL_MEDIUM: AtomicHistogram = AtomicHistogram::new(7, 64);
 
 #[metric(
     name = "itl",
     description = "Inter-token latency in nanoseconds",
-    metadata = { unit = "nanoseconds", context_size = "large" },
-    formatter = canonical_formatter
+    metadata = { unit = "nanoseconds", context_size = "large" }
 )]
 pub static ITL_LARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
 
 #[metric(
     name = "itl",
     description = "Inter-token latency in nanoseconds",
-    metadata = { unit = "nanoseconds", context_size = "xlarge" },
-    formatter = canonical_formatter
+    metadata = { unit = "nanoseconds", context_size = "xlarge" }
 )]
 pub static ITL_XLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
 
 #[metric(
     name = "itl",
     description = "Inter-token latency in nanoseconds",
-    metadata = { unit = "nanoseconds", context_size = "xxlarge" },
-    formatter = canonical_formatter
+    metadata = { unit = "nanoseconds", context_size = "xxlarge" }
 )]
 pub static ITL_XXLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
 

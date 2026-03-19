@@ -13,53 +13,6 @@ use tokio::time::{Instant, interval_at, timeout};
 use crate::config::Config;
 use crate::metrics::RUNNING;
 
-/// Inject a "metric" metadata key into each metric in the snapshot.
-///
-/// The metriken Tsdb requires a "metric" field metadata key to index columns
-/// for PromQL querying. The base metric name (before the canonical formatter
-/// appends label suffixes) is extracted by stripping the `_suffix` that the
-/// formatter added.
-///
-/// For example, column "tokens_output" gets `metric = "tokens"` so that
-/// PromQL `tokens{direction="output"}` works.
-fn inject_metric_metadata(snapshot: &mut metriken_exposition::Snapshot) {
-    let metriken_exposition::Snapshot::V1(snapshot) = snapshot else {
-        return;
-    };
-    // The canonical formatter produces names like "tokens_output" from base "tokens".
-    // We need to recover the base name. We do this by looking at each metric in the
-    // global registry and matching its formatted name to find the base name.
-    let metric_names: std::collections::HashMap<String, String> = metriken::metrics()
-        .iter()
-        .map(|m| {
-            let formatted = m.formatted(metriken::Format::Simple);
-            (formatted, m.name().to_string())
-        })
-        .collect();
-
-    for counter in &mut snapshot.counters {
-        if let Some(base_name) = metric_names.get(&counter.name) {
-            counter
-                .metadata
-                .insert("metric".to_string(), base_name.clone());
-        }
-    }
-    for gauge in &mut snapshot.gauges {
-        if let Some(base_name) = metric_names.get(&gauge.name) {
-            gauge
-                .metadata
-                .insert("metric".to_string(), base_name.clone());
-        }
-    }
-    for histogram in &mut snapshot.histograms {
-        if let Some(base_name) = metric_names.get(&histogram.name) {
-            histogram
-                .metadata
-                .insert("metric".to_string(), base_name.clone());
-        }
-    }
-}
-
 /// Captures metric snapshots at regular intervals and writes them to a parquet file
 pub async fn capture_snapshots(config: Config) -> Result<()> {
     let metrics_config = match config.metrics.as_ref() {
@@ -108,11 +61,7 @@ pub async fn capture_snapshots(config: Config) -> Result<()> {
             continue;
         }
 
-        // Take snapshot and inject "metric" metadata for Tsdb/PromQL compatibility.
-        // The Tsdb requires a "metric" key in field metadata to index columns.
-        // metriken-exposition doesn't add this, so we post-process the snapshot.
-        let mut snapshot = snapshotter.snapshot();
-        inject_metric_metadata(&mut snapshot);
+        let snapshot = snapshotter.snapshot();
 
         // Serialize to msgpack using the Snapshot::to_msgpack API
         let buf = Snapshot::to_msgpack(&snapshot).expect("failed to serialize snapshot");
