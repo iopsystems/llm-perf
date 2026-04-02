@@ -196,7 +196,13 @@ pub async fn run_evaluation(
             }
         };
 
-        let cot_examples: Vec<Question> = val_data.get(category).cloned().unwrap_or_default();
+        let cot_examples: Vec<Question> = val_data
+            .get(category)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .take(config.inference.num_shots)
+            .collect();
 
         let system_prompt = system_prompt_template.replace("{subject}", category);
 
@@ -291,6 +297,8 @@ pub async fn run_evaluation(
             let temperature = config.inference.temperature;
             let top_p = config.inference.top_p;
             let max_tokens = config.inference.max_tokens;
+            let frequency_penalty = config.inference.frequency_penalty;
+            let presence_penalty = config.inference.presence_penalty;
             let model = model.to_string();
             let verbosity = config.log.verbosity;
 
@@ -310,8 +318,8 @@ pub async fn run_evaluation(
                     max_tokens: Some(max_tokens),
                     temperature: Some(temperature),
                     top_p: Some(top_p),
-                    frequency_penalty: Some(0.0),
-                    presence_penalty: Some(0.0),
+                    frequency_penalty: Some(frequency_penalty),
+                    presence_penalty: Some(presence_penalty),
                     stop: Some(vec!["Question:".to_string()]),
                     stream: Some(false),
                     stream_options: None,

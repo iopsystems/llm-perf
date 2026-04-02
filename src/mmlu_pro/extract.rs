@@ -43,9 +43,9 @@ fn extract_answer_is(text: &str) -> Option<char> {
         .and_then(|m| m.as_str().chars().next())
 }
 
-/// Stage 2: Match "Answer: X" or "answer: X"
+/// Stage 2: Match "Answer: X", "answer: X", "ANSWER: X", etc.
 fn extract_answer_colon(text: &str) -> Option<char> {
-    let re = Regex::new(r"[aA]nswer:\s*([A-J])").unwrap();
+    let re = Regex::new(r"(?i)answer:\s*([A-J])").unwrap();
     re.captures(text)
         .and_then(|caps| caps.get(1))
         .and_then(|m| m.as_str().chars().next())
@@ -79,6 +79,8 @@ mod tests {
         assert_eq!(extract_answer("Answer: D"), Some('D'));
         assert_eq!(extract_answer("answer: E"), Some('E'));
         assert_eq!(extract_answer("Answer:  F"), Some('F'));
+        assert_eq!(extract_answer("ANSWER: G"), Some('G'));
+        assert_eq!(extract_answer("ANSWER:  H"), Some('H'));
     }
 
     #[test]

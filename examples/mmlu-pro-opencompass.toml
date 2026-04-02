@@ -1,0 +1,33 @@
+# MMLU-Pro OpenCompass-style configuration
+# 0-shot CoT evaluation matching the methodology used by OpenCompass for
+# thinking/reasoning models (e.g. Qwen3, QwQ, DeepSeek-R1).
+#
+# Key differences from the default 5-shot config:
+# - 0-shot: the thinking chain replaces the need for few-shot examples
+# - ANSWER: $LETTER format instead of "the answer is (X)"
+# - Higher temperature (1.0) for better reasoning exploration
+# - Presence penalty (1.5) to prevent repetition during long reasoning chains
+# - Larger max_tokens (32768) to allow extended reasoning
+
+[endpoint]
+base_url = "http://localhost:8080/v1"
+# model = "my-model"
+# api_key = "sk-..."
+timeout = 600
+
+[inference]
+num_shots = 0
+temperature = 1.0
+top_p = 0.95
+max_tokens = 32768
+frequency_penalty = 0.0
+presence_penalty = 1.5
+system_prompt = "Answer the following multiple choice question about {subject}. The last line of your response should be of the following format: 'ANSWER: $LETTER' (without quotes) where LETTER is one of ABCDEFGHIJ. Think step by step before answering."
+
+[load]
+categories = ["all"]
+subset = 1.0
+concurrent_requests = 16
+
+[log]
+verbosity = 0

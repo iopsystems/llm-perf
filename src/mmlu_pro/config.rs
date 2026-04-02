@@ -36,6 +36,12 @@ pub struct InferenceConfig {
     pub top_p: f32,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    #[serde(default)]
+    pub frequency_penalty: f32,
+    #[serde(default)]
+    pub presence_penalty: f32,
+    #[serde(default = "default_num_shots")]
+    pub num_shots: usize,
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
 }
@@ -46,6 +52,10 @@ fn default_top_p() -> f32 {
 
 fn default_max_tokens() -> u32 {
     4096
+}
+
+fn default_num_shots() -> usize {
+    5
 }
 
 fn default_system_prompt() -> String {

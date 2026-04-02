@@ -59,6 +59,9 @@ pub enum Command {
         /// Number of concurrent requests (overrides config)
         #[arg(short = 'p', long)]
         concurrent_requests: Option<usize>,
+        /// Number of few-shot examples, 0 for zero-shot (overrides config)
+        #[arg(long)]
+        num_shots: Option<usize>,
         /// Verbosity level 0-2 (overrides config)
         #[arg(short, long)]
         verbosity: Option<u8>,

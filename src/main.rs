@@ -165,6 +165,7 @@ fn run_mmlu_pro_mode(cmd: &Command) -> Result<()> {
         ref category,
         subset,
         concurrent_requests,
+        num_shots,
         verbosity,
         log_prompt,
         ref comment,
@@ -196,6 +197,9 @@ fn run_mmlu_pro_mode(cmd: &Command) -> Result<()> {
     }
     if let Some(concurrent_requests) = concurrent_requests {
         config.load.concurrent_requests = concurrent_requests;
+    }
+    if let Some(num_shots) = num_shots {
+        config.inference.num_shots = num_shots;
     }
     if let Some(verbosity) = verbosity {
         config.log.verbosity = verbosity;
@@ -239,7 +243,14 @@ fn run_mmlu_pro_mode(cmd: &Command) -> Result<()> {
         eprintln!("  URL: {}", config.endpoint.base_url);
         eprintln!("  Concurrent Requests: {}", config.load.concurrent_requests);
         eprintln!("  Subset: {}", config.load.subset);
+        eprintln!("  Shots: {}", config.inference.num_shots);
         eprintln!("  Max Tokens: {}", config.inference.max_tokens);
+        eprintln!("  Temperature: {}", config.inference.temperature);
+        eprintln!("  Presence Penalty: {}", config.inference.presence_penalty);
+        eprintln!(
+            "  Frequency Penalty: {}",
+            config.inference.frequency_penalty
+        );
         eprintln!();
 
         eprintln!("Loading MMLU-Pro dataset...");
