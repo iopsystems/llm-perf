@@ -48,9 +48,22 @@ fn order_categories(stats: &HashMap<String, CategoryStats>) -> Vec<String> {
     ordered
 }
 
-/// Generate and save the final report.
+/// Generate and save the final report (both text and JSON).
 pub fn generate_report(
     config: &Config,
+    model: &str,
+    stats: &HashMap<String, CategoryStats>,
+    token_stats: &TokenStats,
+    elapsed: Duration,
+    output_dir: &Path,
+) {
+    generate_text_report(config, model, stats, token_stats, elapsed, output_dir);
+    generate_json_report(config, model, stats, token_stats, elapsed, output_dir);
+}
+
+fn generate_text_report(
+    config: &Config,
+    model: &str,
     stats: &HashMap<String, CategoryStats>,
     token_stats: &TokenStats,
     elapsed: Duration,
@@ -63,13 +76,16 @@ pub fn generate_report(
     lines.push(format!("{}", chrono::Local::now()));
 
     // Config (without api_key)
-    lines.push(format!("Model: {}", config.server.model));
-    lines.push(format!("URL: {}", config.server.url));
+    lines.push(format!("Model: {}", model));
+    lines.push(format!("URL: {}", config.endpoint.base_url));
     lines.push(format!("Temperature: {}", config.inference.temperature));
     lines.push(format!("Top P: {}", config.inference.top_p));
     lines.push(format!("Max Tokens: {}", config.inference.max_tokens));
-    lines.push(format!("Parallel: {}", config.test.parallel));
-    lines.push(format!("Subset: {}", config.test.subset));
+    lines.push(format!(
+        "Concurrent Requests: {}",
+        config.load.concurrent_requests
+    ));
+    lines.push(format!("Subset: {}", config.load.subset));
     if !config.comment.is_empty() {
         lines.push(format!("Comment: {}", config.comment));
     }
@@ -213,6 +229,131 @@ pub fn generate_report(
         }
         eprintln!("Report saved to: {}", report_path.display());
     }
+}
+
+fn generate_json_report(
+    config: &Config,
+    model: &str,
+    stats: &HashMap<String, CategoryStats>,
+    token_stats: &TokenStats,
+    elapsed: Duration,
+    output_dir: &Path,
+) {
+    let report_path = output_dir.join("report.json");
+    let categories = order_categories(stats);
+
+    let mut total_correct = 0u32;
+    let mut total_wrong = 0u32;
+    let mut total_extraction_failures = 0u32;
+
+    let mut category_results = serde_json::Map::new();
+    for category in &categories {
+        if let Some(s) = stats.get(category) {
+            let total = s.correct + s.wrong;
+            let acc = if total > 0 {
+                s.correct as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            };
+            category_results.insert(
+                category.clone(),
+                serde_json::json!({
+                    "correct": s.correct,
+                    "wrong": s.wrong,
+                    "total": total,
+                    "accuracy": round2(acc),
+                    "extraction_failures": s.extraction_failures,
+                }),
+            );
+            total_correct += s.correct;
+            total_wrong += s.wrong;
+            total_extraction_failures += s.extraction_failures;
+        }
+    }
+
+    let total = total_correct + total_wrong;
+    let overall_acc = if total > 0 {
+        total_correct as f64 / total as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    let mut report = serde_json::json!({
+        "timestamp": chrono::Local::now().to_rfc3339(),
+        "config": {
+            "model": model,
+            "base_url": config.endpoint.base_url,
+            "temperature": config.inference.temperature,
+            "top_p": config.inference.top_p,
+            "max_tokens": config.inference.max_tokens,
+            "concurrent_requests": config.load.concurrent_requests,
+            "subset": config.load.subset,
+        },
+        "overall": {
+            "correct": total_correct,
+            "wrong": total_wrong,
+            "total": total,
+            "accuracy": round2(overall_acc),
+            "extraction_failures": total_extraction_failures,
+        },
+        "categories": category_results,
+        "elapsed_seconds": round2(elapsed.as_secs_f64()),
+    });
+
+    if !config.comment.is_empty() {
+        report["config"]["comment"] = serde_json::json!(config.comment);
+    }
+
+    // Token usage
+    if !token_stats.prompt_tokens.is_empty() {
+        let duration_secs = elapsed.as_secs_f64();
+
+        let ptoks: Vec<f64> = token_stats
+            .prompt_tokens
+            .iter()
+            .map(|&t| t as f64)
+            .collect();
+        let ctoks: Vec<f64> = token_stats
+            .completion_tokens
+            .iter()
+            .map(|&t| t as f64)
+            .collect();
+
+        let p_sum: f64 = ptoks.iter().sum();
+        let c_sum: f64 = ctoks.iter().sum();
+
+        report["tokens"] = serde_json::json!({
+            "prompt": {
+                "min": ptoks.iter().cloned().fold(f64::INFINITY, f64::min) as u64,
+                "max": ptoks.iter().cloned().fold(f64::NEG_INFINITY, f64::max) as u64,
+                "average": round2(p_sum / ptoks.len() as f64),
+                "total": p_sum as u64,
+                "tokens_per_second": round2(p_sum / duration_secs),
+            },
+            "completion": {
+                "min": ctoks.iter().cloned().fold(f64::INFINITY, f64::min) as u64,
+                "max": ctoks.iter().cloned().fold(f64::NEG_INFINITY, f64::max) as u64,
+                "average": round2(c_sum / ctoks.len() as f64),
+                "total": c_sum as u64,
+                "tokens_per_second": round2(c_sum / duration_secs),
+            },
+        });
+    }
+
+    match serde_json::to_string_pretty(&report) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&report_path, &json) {
+                eprintln!("Failed to write JSON report: {}", e);
+            } else {
+                eprintln!("JSON report saved to: {}", report_path.display());
+            }
+        }
+        Err(e) => eprintln!("Failed to serialize JSON report: {}", e),
+    }
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
 }
 
 fn format_duration(d: Duration) -> String {

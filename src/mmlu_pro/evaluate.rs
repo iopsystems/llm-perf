@@ -151,34 +151,35 @@ fn print_status(category: &str, counters: &ProgressCounters, start: Instant) {
 /// Run evaluation across all specified categories.
 pub async fn run_evaluation(
     config: &Config,
+    model: &str,
     test_data: &HashMap<String, Vec<Question>>,
     val_data: &HashMap<String, Vec<Question>>,
     output_dir: &Path,
 ) -> Result<EvaluationResult> {
     let client_config = ClientConfig {
-        base_url: config.server.url.clone(),
-        api_key: Some(config.server.api_key.clone()),
-        model: config.server.model.clone(),
-        timeout: std::time::Duration::from_secs_f64(config.server.timeout),
+        base_url: config.endpoint.base_url.clone(),
+        api_key: config.endpoint.api_key.clone(),
+        model: model.to_string(),
+        timeout: std::time::Duration::from_secs(config.endpoint.timeout),
         max_retries: 3,
         retry_initial_delay_ms: 1000,
         retry_max_delay_ms: 30000,
-        pool_size: config.test.parallel,
+        pool_size: config.load.concurrent_requests,
     };
 
     let client = Arc::new(OpenAIClient::new(client_config)?);
-    let semaphore = Arc::new(Semaphore::new(config.test.parallel));
+    let semaphore = Arc::new(Semaphore::new(config.load.concurrent_requests));
 
     let mut all_stats: HashMap<String, CategoryStats> = HashMap::new();
     let mut all_token_stats = TokenStats::default();
 
     // Determine which categories to evaluate
-    let categories: Vec<String> = if config.test.categories.contains(&"all".to_string()) {
+    let categories: Vec<String> = if config.load.categories.contains(&"all".to_string()) {
         let mut cats: Vec<String> = test_data.keys().cloned().collect();
         cats.sort();
         cats
     } else {
-        config.test.categories.clone()
+        config.load.categories.clone()
     };
 
     let system_prompt_template = &config.inference.system_prompt;
@@ -290,7 +291,7 @@ pub async fn run_evaluation(
             let temperature = config.inference.temperature;
             let top_p = config.inference.top_p;
             let max_tokens = config.inference.max_tokens;
-            let model = config.server.model.clone();
+            let model = model.to_string();
             let verbosity = config.log.verbosity;
 
             let handle = tokio::spawn(async move {

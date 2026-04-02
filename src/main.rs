@@ -164,7 +164,7 @@ fn run_mmlu_pro_mode(cmd: &Command) -> Result<()> {
         timeout,
         ref category,
         subset,
-        parallel,
+        concurrent_requests,
         verbosity,
         log_prompt,
         ref comment,
@@ -177,25 +177,25 @@ fn run_mmlu_pro_mode(cmd: &Command) -> Result<()> {
 
     // Apply CLI overrides
     if let Some(url) = url {
-        config.server.url = url.clone();
+        config.endpoint.base_url = url.clone();
     }
     if let Some(api_key) = api_key {
-        config.server.api_key = api_key.clone();
+        config.endpoint.api_key = Some(api_key.clone());
     }
     if let Some(model) = model {
-        config.server.model = model.clone();
+        config.endpoint.model = Some(model.clone());
     }
     if let Some(timeout) = timeout {
-        config.server.timeout = timeout;
+        config.endpoint.timeout = timeout;
     }
     if let Some(category) = category {
-        config.test.categories = vec![category.clone()];
+        config.load.categories = vec![category.clone()];
     }
     if let Some(subset) = subset {
-        config.test.subset = subset;
+        config.load.subset = subset;
     }
-    if let Some(parallel) = parallel {
-        config.test.parallel = parallel;
+    if let Some(concurrent_requests) = concurrent_requests {
+        config.load.concurrent_requests = concurrent_requests;
     }
     if let Some(verbosity) = verbosity {
         config.log.verbosity = verbosity;
@@ -207,21 +207,8 @@ fn run_mmlu_pro_mode(cmd: &Command) -> Result<()> {
         config.comment = comment.clone();
     }
 
-    // Print startup info
-    eprintln!("MMLU-Pro Benchmark");
-    eprintln!("  Model: {}", config.server.model);
-    eprintln!("  URL: {}", config.server.url);
-    eprintln!("  Parallel: {}", config.test.parallel);
-    eprintln!("  Subset: {}", config.test.subset);
-    eprintln!("  Max Tokens: {}", config.inference.max_tokens);
-    eprintln!();
-
     // Create output directory
-    let model_dir_name = regex::Regex::new(r"\W")
-        .unwrap()
-        .replace_all(&config.server.model, "-")
-        .to_string();
-    let output_dir = PathBuf::from("eval_results").join(&model_dir_name);
+    let output_dir = PathBuf::from("eval_results");
     std::fs::create_dir_all(&output_dir)?;
 
     // Build tokio runtime
@@ -233,8 +220,30 @@ fn run_mmlu_pro_mode(cmd: &Command) -> Result<()> {
 
     // Run evaluation
     let result = runtime.block_on(async {
+        // Detect model if not specified
+        let model = if let Some(model) = config.endpoint.model.clone() {
+            model
+        } else {
+            eprintln!("Model not specified, querying server...");
+            llm_perf::client::detect_model(
+                &config.endpoint.base_url,
+                config.endpoint.api_key.as_deref(),
+                std::time::Duration::from_secs(config.endpoint.timeout),
+            )
+            .await?
+        };
+
+        // Print startup info
+        eprintln!("MMLU-Pro Benchmark");
+        eprintln!("  Model: {}", model);
+        eprintln!("  URL: {}", config.endpoint.base_url);
+        eprintln!("  Concurrent Requests: {}", config.load.concurrent_requests);
+        eprintln!("  Subset: {}", config.load.subset);
+        eprintln!("  Max Tokens: {}", config.inference.max_tokens);
+        eprintln!();
+
         eprintln!("Loading MMLU-Pro dataset...");
-        let (test_data, val_data) = dataset::load_mmlu_pro(config.test.subset).await?;
+        let (test_data, val_data) = dataset::load_mmlu_pro(config.load.subset).await?;
 
         eprintln!(
             "Dataset loaded: {} categories, {} total test questions",
@@ -242,14 +251,18 @@ fn run_mmlu_pro_mode(cmd: &Command) -> Result<()> {
             test_data.values().map(|v| v.len()).sum::<usize>()
         );
 
-        evaluate::run_evaluation(&config, &test_data, &val_data, &output_dir).await
+        let eval_result =
+            evaluate::run_evaluation(&config, &model, &test_data, &val_data, &output_dir).await?;
+        Ok::<_, anyhow::Error>((model, eval_result))
     })?;
 
     let elapsed = start.elapsed();
+    let (model, result) = result;
 
     // Generate report
     report::generate_report(
         &config,
+        &model,
         &result.category_stats,
         &result.token_stats,
         elapsed,

@@ -38,27 +38,27 @@ pub enum Command {
     MmluPro {
         /// Path to the TOML configuration file
         config: PathBuf,
-        /// Server URL (overrides config)
+        /// Server URL (overrides config endpoint.base_url)
         #[arg(short = 'u', long)]
         url: Option<String>,
-        /// API key (overrides config)
+        /// API key (overrides config endpoint.api_key)
         #[arg(short = 'a', long = "api")]
         api_key: Option<String>,
-        /// Model name (overrides config)
+        /// Model name (overrides config; auto-detected if omitted)
         #[arg(short, long)]
         model: Option<String>,
         /// Request timeout in seconds (overrides config)
         #[arg(long)]
-        timeout: Option<f64>,
+        timeout: Option<u64>,
         /// Single category to test (overrides config)
         #[arg(long)]
         category: Option<String>,
         /// Fraction of items to keep per category, 0.0-1.0 (overrides config)
         #[arg(long)]
         subset: Option<f64>,
-        /// Number of parallel requests (overrides config)
-        #[arg(short, long)]
-        parallel: Option<usize>,
+        /// Number of concurrent requests (overrides config)
+        #[arg(short = 'p', long)]
+        concurrent_requests: Option<usize>,
         /// Verbosity level 0-2 (overrides config)
         #[arg(short, long)]
         verbosity: Option<u8>,

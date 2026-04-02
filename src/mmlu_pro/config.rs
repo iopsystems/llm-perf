@@ -6,29 +6,26 @@ use std::path::Path;
 pub struct Config {
     #[serde(default)]
     pub comment: String,
-    pub server: ServerConfig,
+    pub endpoint: EndpointConfig,
     pub inference: InferenceConfig,
-    pub test: TestConfig,
+    pub load: LoadConfig,
     #[serde(default)]
     pub log: LogConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ServerConfig {
-    pub url: String,
-    #[serde(default = "default_api_key")]
-    pub api_key: String,
-    pub model: String,
+pub struct EndpointConfig {
+    pub base_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
     #[serde(default = "default_timeout")]
-    pub timeout: f64,
+    pub timeout: u64,
 }
 
-fn default_api_key() -> String {
-    "api key".to_string()
-}
-
-fn default_timeout() -> f64 {
-    600.0
+fn default_timeout() -> u64 {
+    600
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -59,13 +56,13 @@ fn default_system_prompt() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct TestConfig {
+pub struct LoadConfig {
     #[serde(default = "default_categories")]
     pub categories: Vec<String>,
     #[serde(default = "default_subset")]
     pub subset: f64,
-    #[serde(default = "default_parallel")]
-    pub parallel: usize,
+    #[serde(default = "default_concurrent_requests")]
+    pub concurrent_requests: usize,
 }
 
 fn default_categories() -> Vec<String> {
@@ -76,7 +73,7 @@ fn default_subset() -> f64 {
     1.0
 }
 
-fn default_parallel() -> usize {
+fn default_concurrent_requests() -> usize {
     1
 }
 
