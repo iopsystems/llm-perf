@@ -199,22 +199,22 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         }
 
         // Response statistics for this window (as rates)
-        let window_responses =
-            window_requests_success + window_requests_error + window_requests_timeout;
-        let window_errors = window_requests_error + window_requests_timeout;
+        let window_responses = window_requests_success + window_requests_error;
         let responses_rate = window_responses as f64 / interval_secs;
-        let success_rate_value = responses_rate - (window_errors as f64 / interval_secs);
-        let error_rate = window_errors as f64 / interval_secs;
+        let success_rate_value = responses_rate - (window_requests_error as f64 / interval_secs);
+        let error_rate = window_requests_error as f64 / interval_secs;
+        let timeout_rate = window_requests_timeout as f64 / interval_secs;
         let success_rate = if window_responses > 0 {
             100.0 * window_requests_success as f64 / window_responses as f64
         } else {
             0.0
         };
         output!(
-            "Responses/s: Total: {:.2} Ok: {:.2} Err: {:.2} Success: {:.2}%",
+            "Responses/s: Total: {:.2} Ok: {:.2} Err: {:.2} Timeout: {:.2} Success: {:.2}%",
             responses_rate,
             success_rate_value,
             error_rate,
+            timeout_rate,
             success_rate
         );
 
@@ -224,7 +224,6 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
             let e4xx_rate = window_errors_4xx as f64 / interval_secs;
             let e5xx_rate = window_errors_5xx as f64 / interval_secs;
             let parse_rate = window_errors_parse as f64 / interval_secs;
-            let timeout_rate = window_requests_timeout as f64 / interval_secs;
             let other_rate = window_errors_other as f64 / interval_secs;
             output!(
                 "Errors/s: Connection: {:.2} 4xx: {:.2} 5xx: {:.2} Parse: {:.2} Timeout: {:.2} Other: {:.2}",
