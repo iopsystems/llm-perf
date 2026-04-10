@@ -62,6 +62,9 @@ pub struct Summary {
     pub total_requests: u64,
     pub successful_requests: u64,
     pub failed_requests: u64,
+    pub error_requests: u64,
+    pub timeout_requests: u64,
+    pub canceled_requests: u64,
     pub success_rate: f64,
     pub retries: u64,
 }
@@ -190,15 +193,16 @@ impl ReportBuilder {
         };
 
         use crate::metrics::{
-            ERRORS_CONNECTION, ERRORS_HTTP_4XX, ERRORS_HTTP_5XX, ERRORS_OTHER, REQUESTS_FAILED,
-            REQUESTS_RETRIED, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT, TOKENS_INPUT,
-            TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING,
+            ERRORS_CONNECTION, ERRORS_HTTP_4XX, ERRORS_HTTP_5XX, ERRORS_OTHER, REQUESTS_CANCELED,
+            REQUESTS_ERROR, REQUESTS_RETRIED, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT,
+            TOKENS_INPUT, TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING,
         };
 
         let requests_sent = REQUESTS_SENT.value();
         let requests_success = REQUESTS_SUCCESS.value();
-        let requests_failed = REQUESTS_FAILED.value();
+        let requests_error = REQUESTS_ERROR.value();
         let requests_timeout = REQUESTS_TIMEOUT.value();
+        let requests_canceled = REQUESTS_CANCELED.value();
 
         let input_tokens = TOKENS_INPUT.value();
         let output_tokens = TOKENS_OUTPUT_REASONING.value() + TOKENS_OUTPUT_CONTENT.value();
@@ -249,13 +253,18 @@ impl ReportBuilder {
 
         let retries = REQUESTS_RETRIED.value();
 
-        // Calculate completed requests (successful + failed)
-        let completed_requests = requests_success + requests_failed + requests_timeout;
+        // Completed = received a complete response (success or server error)
+        let completed_requests = requests_success + requests_error;
+        // Failed = error + timeout (but not canceled)
+        let failed_requests = requests_error + requests_timeout;
 
         let summary = Summary {
             total_requests: requests_sent,
             successful_requests: requests_success,
-            failed_requests: requests_failed + requests_timeout,
+            failed_requests,
+            error_requests: requests_error,
+            timeout_requests: requests_timeout,
+            canceled_requests: requests_canceled,
             success_rate: if completed_requests > 0 {
                 requests_success as f64 / completed_requests as f64
             } else {
@@ -590,28 +599,32 @@ impl ReportBuilder {
             timestamp, report.summary.total_requests, report.summary.retries
         );
         println!(
-            "{} Responses: Received: {} Ok: {} Err: {} Success: {:.2}%",
+            "{} Responses: Ok: {} Err: {} Timeout: {} Success: {:.2}%",
             timestamp,
-            report.summary.successful_requests + report.summary.failed_requests,
             report.summary.successful_requests,
-            report.summary.failed_requests,
+            report.summary.error_requests,
+            report.summary.timeout_requests,
             report.summary.success_rate * 100.0
         );
+        if report.summary.canceled_requests > 0 {
+            println!(
+                "{} Canceled: {}",
+                timestamp, report.summary.canceled_requests
+            );
+        }
 
         // Error breakdown if any
-        let total_errors = report.errors.timeout_errors
-            + report.errors.connection_errors
+        let total_errors = report.errors.connection_errors
             + report.errors.http_4xx_errors
             + report.errors.http_5xx_errors
             + report.errors.other_errors;
         if total_errors > 0 {
             println!(
-                "{} Errors: Connection: {} 4xx: {} 5xx: {} Timeout: {} Other: {}",
+                "{} Errors: Connection: {} 4xx: {} 5xx: {} Other: {}",
                 timestamp,
                 report.errors.connection_errors,
                 report.errors.http_4xx_errors,
                 report.errors.http_5xx_errors,
-                report.errors.timeout_errors,
                 report.errors.other_errors
             );
         }

@@ -598,8 +598,9 @@ impl BenchmarkRunner {
                                 completed.fetch_add(1, Ordering::Relaxed);
                             }
                             Err(_) => {
-                                // Request timed out due to test ending - don't count as failure
+                                // Request cancelled due to test ending
                                 debug!("Request {} cancelled due to test duration limit", idx);
+                                Metrics::record_request_complete(RequestStatus::Canceled);
                             }
                         }
                     }
@@ -829,8 +830,9 @@ impl BenchmarkRunner {
                             result
                         }
                         Err(_) => {
-                            // Request timed out due to test ending - don't count as failure
+                            // Request cancelled due to test ending
                             debug!("Request {} cancelled due to test duration limit", idx);
+                            Metrics::record_request_complete(RequestStatus::Canceled);
                             Ok(())
                         }
                     }

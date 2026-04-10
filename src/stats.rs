@@ -9,9 +9,9 @@ use tokio::time::{Instant, interval_at, timeout};
 use crate::config::Config;
 use crate::metrics::{
     ALL_TPOT, CONVERSATIONS_SENT, CONVERSATIONS_SUCCESS, ERRORS_CONNECTION, ERRORS_HTTP_4XX,
-    ERRORS_HTTP_5XX, ERRORS_OTHER, ERRORS_PARSE, REQUEST_LATENCY, REQUESTS_FAILED,
-    REQUESTS_INFLIGHT, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT, RUNNING, TOKENS_INPUT,
-    TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING, TURNS_TOTAL,
+    ERRORS_HTTP_5XX, ERRORS_OTHER, ERRORS_PARSE, REQUEST_LATENCY, REQUESTS_CANCELED,
+    REQUESTS_ERROR, REQUESTS_INFLIGHT, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT, RUNNING,
+    TOKENS_INPUT, TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING, TURNS_TOTAL,
 };
 
 /// Print with timestamp prefix
@@ -31,8 +31,9 @@ struct MetricsSnapshot {
     // Store previous counter values
     requests_sent: u64,
     requests_success: u64,
-    requests_failed: u64,
+    requests_error: u64,
     requests_timeout: u64,
+    requests_canceled: u64,
     tokens_input: u64,
     tokens_output: u64,
     errors_connection: u64,
@@ -64,8 +65,9 @@ impl MetricsSnapshot {
         Self {
             requests_sent: REQUESTS_SENT.value(),
             requests_success: REQUESTS_SUCCESS.value(),
-            requests_failed: REQUESTS_FAILED.value(),
+            requests_error: REQUESTS_ERROR.value(),
             requests_timeout: REQUESTS_TIMEOUT.value(),
+            requests_canceled: REQUESTS_CANCELED.value(),
             tokens_input: TOKENS_INPUT.value(),
             tokens_output: TOKENS_OUTPUT_REASONING.value() + TOKENS_OUTPUT_CONTENT.value(),
             errors_connection: ERRORS_CONNECTION.value(),
@@ -81,8 +83,9 @@ impl MetricsSnapshot {
     fn update(&mut self) {
         self.requests_sent = REQUESTS_SENT.value();
         self.requests_success = REQUESTS_SUCCESS.value();
-        self.requests_failed = REQUESTS_FAILED.value();
+        self.requests_error = REQUESTS_ERROR.value();
         self.requests_timeout = REQUESTS_TIMEOUT.value();
+        self.requests_canceled = REQUESTS_CANCELED.value();
         self.tokens_input = TOKENS_INPUT.value();
         self.tokens_output = TOKENS_OUTPUT_REASONING.value() + TOKENS_OUTPUT_CONTENT.value();
         self.errors_connection = ERRORS_CONNECTION.value();
@@ -132,8 +135,9 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         // Get current values
         let current_requests_sent = REQUESTS_SENT.value();
         let current_requests_success = REQUESTS_SUCCESS.value();
-        let current_requests_failed = REQUESTS_FAILED.value();
+        let current_requests_error = REQUESTS_ERROR.value();
         let current_requests_timeout = REQUESTS_TIMEOUT.value();
+        let current_requests_canceled = REQUESTS_CANCELED.value();
         let current_tokens_input = TOKENS_INPUT.value();
         let current_tokens_output = TOKENS_OUTPUT_REASONING.value() + TOKENS_OUTPUT_CONTENT.value();
         let current_errors_connection = ERRORS_CONNECTION.value();
@@ -145,8 +149,10 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         // Calculate deltas for this window
         let window_requests_sent = current_requests_sent - previous_snapshot.requests_sent;
         let window_requests_success = current_requests_success - previous_snapshot.requests_success;
-        let window_requests_failed = current_requests_failed - previous_snapshot.requests_failed;
+        let window_requests_error = current_requests_error - previous_snapshot.requests_error;
         let window_requests_timeout = current_requests_timeout - previous_snapshot.requests_timeout;
+        let _window_requests_canceled =
+            current_requests_canceled - previous_snapshot.requests_canceled;
         let window_tokens_input = current_tokens_input - previous_snapshot.tokens_input;
         let window_tokens_output = current_tokens_output - previous_snapshot.tokens_output;
         let window_errors_connection =
@@ -194,8 +200,8 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
 
         // Response statistics for this window (as rates)
         let window_responses =
-            window_requests_success + window_requests_failed + window_requests_timeout;
-        let window_errors = window_requests_failed + window_requests_timeout;
+            window_requests_success + window_requests_error + window_requests_timeout;
+        let window_errors = window_requests_error + window_requests_timeout;
         let responses_rate = window_responses as f64 / interval_secs;
         let success_rate_value = responses_rate - (window_errors as f64 / interval_secs);
         let error_rate = window_errors as f64 / interval_secs;
@@ -213,7 +219,7 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         );
 
         // Error breakdown if any in this window (as rates)
-        if window_requests_failed > 0 || window_requests_timeout > 0 {
+        if window_requests_error > 0 || window_requests_timeout > 0 {
             let conn_rate = window_errors_connection as f64 / interval_secs;
             let e4xx_rate = window_errors_4xx as f64 / interval_secs;
             let e5xx_rate = window_errors_5xx as f64 / interval_secs;
