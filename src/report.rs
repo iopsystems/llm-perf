@@ -254,7 +254,7 @@ impl ReportBuilder {
         let retries = REQUESTS_RETRIED.value();
 
         // Completed = received a complete response (success or server error)
-        let completed_requests = requests_success + requests_error;
+        let requests_completed = requests_success + requests_error;
         // Failed = error + timeout (but not canceled)
         let failed_requests = requests_error + requests_timeout;
 
@@ -265,8 +265,8 @@ impl ReportBuilder {
             error_requests: requests_error,
             timeout_requests: requests_timeout,
             canceled_requests: requests_canceled,
-            success_rate: if completed_requests > 0 {
-                requests_success as f64 / completed_requests as f64
+            success_rate: if requests_completed > 0 {
+                requests_success as f64 / requests_completed as f64
             } else {
                 0.0
             },
