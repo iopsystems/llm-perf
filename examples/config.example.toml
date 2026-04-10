@@ -205,6 +205,35 @@ level = "info"
 # output = "logprobs.jsonl"  # Path to write JSONL output
 
 # =============================================================================
+# Saturation Search Configuration (Optional)
+# =============================================================================
+# Automatically discover the maximum concurrency a server can handle while
+# maintaining SLO compliance. Geometrically steps up concurrency from
+# start_concurrency, measuring latency at each level, and stops after
+# consecutive SLO failures.
+#
+# When enabled, the saturation search controls concurrency — the load section's
+# concurrent_requests is ignored. You still need duration_seconds or
+# total_requests set (the search terminates on SLO failures, not duration).
+#
+# [saturation]
+# start_concurrency = 1         # Starting concurrency level
+# step_multiplier = 1.5         # Concurrency increase per step (50% increase)
+# sample_window = "60s"         # How long to measure at each concurrency level
+# stop_after_failures = 3       # Stop after N consecutive SLO failures
+# max_concurrency = 256         # Absolute ceiling on concurrency
+# min_throughput_ratio = 0.9    # Achieved tokens/s must be >= 90% of linear scaling
+#
+# # SLO thresholds — set any combination of TTFT, ITL, TPOT at p50/p99/p999.
+# # At least one threshold must be specified.
+# [saturation.slo.ttft]
+# p99_ms = 500.0               # TTFT p99 must stay under 500ms
+#
+# [saturation.slo.tpot]
+# p99_ms = 50.0                # TPOT p99 must stay under 50ms
+# p999_ms = 100.0              # TPOT p999 must stay under 100ms
+
+# =============================================================================
 # Common Configuration Patterns
 # =============================================================================
 
