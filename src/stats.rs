@@ -151,7 +151,7 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         let window_requests_success = current_requests_success - previous_snapshot.requests_success;
         let window_requests_error = current_requests_error - previous_snapshot.requests_error;
         let window_requests_timeout = current_requests_timeout - previous_snapshot.requests_timeout;
-        let _window_requests_canceled =
+        let window_requests_canceled =
             current_requests_canceled - previous_snapshot.requests_canceled;
         let window_tokens_input = current_tokens_input - previous_snapshot.tokens_input;
         let window_tokens_output = current_tokens_output - previous_snapshot.tokens_output;
@@ -217,6 +217,10 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
             timeout_rate,
             success_rate
         );
+        if window_requests_canceled > 0 {
+            let canceled_rate = window_requests_canceled as f64 / interval_secs;
+            output!("Canceled/s: {:.2}", canceled_rate);
+        }
 
         // Error breakdown if any in this window (as rates)
         if window_requests_error > 0 || window_requests_timeout > 0 {
