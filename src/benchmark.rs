@@ -598,8 +598,9 @@ impl BenchmarkRunner {
                                 completed.fetch_add(1, Ordering::Relaxed);
                             }
                             Err(_) => {
-                                // Request timed out due to test ending - don't count as failure
+                                // Request cancelled due to test ending
                                 debug!("Request {} cancelled due to test duration limit", idx);
+                                Metrics::record_request_complete(RequestStatus::Canceled);
                             }
                         }
                     }
@@ -829,8 +830,9 @@ impl BenchmarkRunner {
                             result
                         }
                         Err(_) => {
-                            // Request timed out due to test ending - don't count as failure
+                            // Request cancelled due to test ending
                             debug!("Request {} cancelled due to test duration limit", idx);
+                            Metrics::record_request_complete(RequestStatus::Canceled);
                             Ok(())
                         }
                     }
@@ -1271,32 +1273,32 @@ impl BenchmarkRunner {
         );
         println!(
             "{} Requests: Sent: {}",
-            timestamp, report.summary.total_requests
+            timestamp, report.summary.requests_total
         );
         println!(
             "{} Responses: Received: {} Ok: {} Err: {} Success: {:.2}%",
             timestamp,
-            report.summary.successful_requests + report.summary.failed_requests,
-            report.summary.successful_requests,
-            report.summary.failed_requests,
+            report.summary.requests_successful + report.summary.requests_failed,
+            report.summary.requests_successful,
+            report.summary.requests_failed,
             report.summary.success_rate * 100.0
         );
 
         // Error breakdown if any
-        let total_errors = report.errors.timeout_errors
-            + report.errors.connection_errors
-            + report.errors.http_4xx_errors
-            + report.errors.http_5xx_errors
-            + report.errors.other_errors;
+        let total_errors = report.errors.errors_timeout
+            + report.errors.errors_connection
+            + report.errors.errors_http_4xx
+            + report.errors.errors_http_5xx
+            + report.errors.errors_other;
         if total_errors > 0 {
             println!(
                 "{} Errors: Connection: {} 4xx: {} 5xx: {} Timeout: {} Other: {}",
                 timestamp,
-                report.errors.connection_errors,
-                report.errors.http_4xx_errors,
-                report.errors.http_5xx_errors,
-                report.errors.timeout_errors,
-                report.errors.other_errors
+                report.errors.errors_connection,
+                report.errors.errors_http_4xx,
+                report.errors.errors_http_5xx,
+                report.errors.errors_timeout,
+                report.errors.errors_other
             );
         }
 

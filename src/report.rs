@@ -50,18 +50,21 @@ pub struct TestConfiguration {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorBreakdown {
-    pub timeout_errors: u64,
-    pub connection_errors: u64,
-    pub http_4xx_errors: u64,
-    pub http_5xx_errors: u64,
-    pub other_errors: u64,
+    pub errors_timeout: u64,
+    pub errors_connection: u64,
+    pub errors_http_4xx: u64,
+    pub errors_http_5xx: u64,
+    pub errors_other: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Summary {
-    pub total_requests: u64,
-    pub successful_requests: u64,
-    pub failed_requests: u64,
+    pub requests_total: u64,
+    pub requests_successful: u64,
+    pub requests_failed: u64,
+    pub requests_error: u64,
+    pub requests_timeout: u64,
+    pub requests_canceled: u64,
     pub success_rate: f64,
     pub retries: u64,
 }
@@ -190,15 +193,16 @@ impl ReportBuilder {
         };
 
         use crate::metrics::{
-            ERRORS_CONNECTION, ERRORS_HTTP_4XX, ERRORS_HTTP_5XX, ERRORS_OTHER, REQUESTS_FAILED,
-            REQUESTS_RETRIED, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT, TOKENS_INPUT,
-            TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING,
+            ERRORS_CONNECTION, ERRORS_HTTP_4XX, ERRORS_HTTP_5XX, ERRORS_OTHER, REQUESTS_CANCELED,
+            REQUESTS_ERROR, REQUESTS_RETRIED, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT,
+            TOKENS_INPUT, TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING,
         };
 
         let requests_sent = REQUESTS_SENT.value();
         let requests_success = REQUESTS_SUCCESS.value();
-        let requests_failed = REQUESTS_FAILED.value();
+        let requests_error = REQUESTS_ERROR.value();
         let requests_timeout = REQUESTS_TIMEOUT.value();
+        let requests_canceled = REQUESTS_CANCELED.value();
 
         let input_tokens = TOKENS_INPUT.value();
         let output_tokens = TOKENS_OUTPUT_REASONING.value() + TOKENS_OUTPUT_CONTENT.value();
@@ -249,15 +253,20 @@ impl ReportBuilder {
 
         let retries = REQUESTS_RETRIED.value();
 
-        // Calculate completed requests (successful + failed)
-        let completed_requests = requests_success + requests_failed + requests_timeout;
+        // Completed = received a complete response (success or server error)
+        let requests_completed = requests_success + requests_error;
+        // Failed = error + timeout (but not canceled)
+        let requests_failed = requests_error + requests_timeout;
 
         let summary = Summary {
-            total_requests: requests_sent,
-            successful_requests: requests_success,
-            failed_requests: requests_failed + requests_timeout,
-            success_rate: if completed_requests > 0 {
-                requests_success as f64 / completed_requests as f64
+            requests_total: requests_sent,
+            requests_successful: requests_success,
+            requests_failed,
+            requests_error,
+            requests_timeout,
+            requests_canceled,
+            success_rate: if requests_completed > 0 {
+                requests_success as f64 / requests_completed as f64
             } else {
                 0.0
             },
@@ -274,11 +283,11 @@ impl ReportBuilder {
 
         // Build error breakdown
         let errors = ErrorBreakdown {
-            timeout_errors: requests_timeout,
-            connection_errors: ERRORS_CONNECTION.value(),
-            http_4xx_errors: ERRORS_HTTP_4XX.value(),
-            http_5xx_errors: ERRORS_HTTP_5XX.value(),
-            other_errors: ERRORS_OTHER.value(),
+            errors_timeout: requests_timeout,
+            errors_connection: ERRORS_CONNECTION.value(),
+            errors_http_4xx: ERRORS_HTTP_4XX.value(),
+            errors_http_5xx: ERRORS_HTTP_5XX.value(),
+            errors_other: ERRORS_OTHER.value(),
         };
 
         // Get latency percentiles
@@ -587,32 +596,36 @@ impl ReportBuilder {
         );
         println!(
             "{} Requests: Sent: {} Retries: {}",
-            timestamp, report.summary.total_requests, report.summary.retries
+            timestamp, report.summary.requests_total, report.summary.retries
         );
         println!(
-            "{} Responses: Received: {} Ok: {} Err: {} Success: {:.2}%",
+            "{} Responses: Ok: {} Err: {} Timeout: {} Success: {:.2}%",
             timestamp,
-            report.summary.successful_requests + report.summary.failed_requests,
-            report.summary.successful_requests,
-            report.summary.failed_requests,
+            report.summary.requests_successful,
+            report.summary.requests_error,
+            report.summary.requests_timeout,
             report.summary.success_rate * 100.0
         );
+        if report.summary.requests_canceled > 0 {
+            println!(
+                "{} Canceled: {}",
+                timestamp, report.summary.requests_canceled
+            );
+        }
 
         // Error breakdown if any
-        let total_errors = report.errors.timeout_errors
-            + report.errors.connection_errors
-            + report.errors.http_4xx_errors
-            + report.errors.http_5xx_errors
-            + report.errors.other_errors;
+        let total_errors = report.errors.errors_connection
+            + report.errors.errors_http_4xx
+            + report.errors.errors_http_5xx
+            + report.errors.errors_other;
         if total_errors > 0 {
             println!(
-                "{} Errors: Connection: {} 4xx: {} 5xx: {} Timeout: {} Other: {}",
+                "{} Errors: Connection: {} 4xx: {} 5xx: {} Other: {}",
                 timestamp,
-                report.errors.connection_errors,
-                report.errors.http_4xx_errors,
-                report.errors.http_5xx_errors,
-                report.errors.timeout_errors,
-                report.errors.other_errors
+                report.errors.errors_connection,
+                report.errors.errors_http_4xx,
+                report.errors.errors_http_5xx,
+                report.errors.errors_other
             );
         }
 

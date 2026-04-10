@@ -6,7 +6,7 @@ use std::time::Duration;
 pub enum RequestStatus {
     Success,
     Failed(ErrorType),
-    Timeout,
+    Canceled,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,10 +36,12 @@ pub static RUNNING: AtomicBool = AtomicBool::new(false);
 pub static REQUESTS_SENT: LazyCounter = LazyCounter::new(Counter::default);
 #[metric(name = "requests", metadata = { status = "success" })]
 pub static REQUESTS_SUCCESS: LazyCounter = LazyCounter::new(Counter::default);
-#[metric(name = "requests", metadata = { status = "failed" })]
-pub static REQUESTS_FAILED: LazyCounter = LazyCounter::new(Counter::default);
+#[metric(name = "requests", metadata = { status = "error" })]
+pub static REQUESTS_ERROR: LazyCounter = LazyCounter::new(Counter::default);
 #[metric(name = "requests", metadata = { status = "timeout" })]
 pub static REQUESTS_TIMEOUT: LazyCounter = LazyCounter::new(Counter::default);
+#[metric(name = "requests", metadata = { status = "canceled" })]
+pub static REQUESTS_CANCELED: LazyCounter = LazyCounter::new(Counter::default);
 #[metric(name = "requests", metadata = { status = "retried" })]
 pub static REQUESTS_RETRIED: LazyCounter = LazyCounter::new(Counter::default);
 
@@ -193,20 +195,24 @@ impl Metrics {
             RequestStatus::Success => {
                 REQUESTS_SUCCESS.increment();
             }
-            RequestStatus::Failed(error_type) => {
-                REQUESTS_FAILED.increment();
-                match error_type {
-                    ErrorType::Connection => ERRORS_CONNECTION.increment(),
-                    ErrorType::Http4xx(_) => ERRORS_HTTP_4XX.increment(),
-                    ErrorType::Http5xx(_) => ERRORS_HTTP_5XX.increment(),
-                    ErrorType::Parse => ERRORS_PARSE.increment(),
-                    ErrorType::Timeout => REQUESTS_TIMEOUT.increment(),
-                    ErrorType::Other => ERRORS_OTHER.increment(),
-                };
-            }
-            RequestStatus::Timeout => {
-                REQUESTS_TIMEOUT.increment();
-                ERRORS_OTHER.increment();
+            RequestStatus::Failed(error_type) => match error_type {
+                ErrorType::Timeout => {
+                    REQUESTS_TIMEOUT.increment();
+                }
+                _ => {
+                    REQUESTS_ERROR.increment();
+                    match error_type {
+                        ErrorType::Connection => ERRORS_CONNECTION.increment(),
+                        ErrorType::Http4xx(_) => ERRORS_HTTP_4XX.increment(),
+                        ErrorType::Http5xx(_) => ERRORS_HTTP_5XX.increment(),
+                        ErrorType::Parse => ERRORS_PARSE.increment(),
+                        ErrorType::Other => ERRORS_OTHER.increment(),
+                        ErrorType::Timeout => unreachable!(),
+                    };
+                }
+            },
+            RequestStatus::Canceled => {
+                REQUESTS_CANCELED.increment();
             }
         }
     }
