@@ -61,7 +61,7 @@ pub struct ErrorBreakdown {
 pub struct Summary {
     pub total_requests: u64,
     pub successful_requests: u64,
-    pub failed_requests: u64,
+    pub requests_failed: u64,
     pub error_requests: u64,
     pub timeout_requests: u64,
     pub canceled_requests: u64,
@@ -256,12 +256,12 @@ impl ReportBuilder {
         // Completed = received a complete response (success or server error)
         let requests_completed = requests_success + requests_error;
         // Failed = error + timeout (but not canceled)
-        let failed_requests = requests_error + requests_timeout;
+        let requests_failed = requests_error + requests_timeout;
 
         let summary = Summary {
             total_requests: requests_sent,
             successful_requests: requests_success,
-            failed_requests,
+            requests_failed,
             error_requests: requests_error,
             timeout_requests: requests_timeout,
             canceled_requests: requests_canceled,

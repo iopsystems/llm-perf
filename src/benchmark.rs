@@ -1278,9 +1278,9 @@ impl BenchmarkRunner {
         println!(
             "{} Responses: Received: {} Ok: {} Err: {} Success: {:.2}%",
             timestamp,
-            report.summary.successful_requests + report.summary.failed_requests,
+            report.summary.successful_requests + report.summary.requests_failed,
             report.summary.successful_requests,
-            report.summary.failed_requests,
+            report.summary.requests_failed,
             report.summary.success_rate * 100.0
         );
 
