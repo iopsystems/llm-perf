@@ -37,7 +37,7 @@ pub async fn capture_snapshots(config: Config) -> Result<()> {
 
     // Build snapshotter with metadata
     let snapshotter = SnapshotterBuilder::new()
-        .metadata("source".to_string(), env!("CARGO_PKG_NAME").to_string())
+        .metadata("source".to_string(), "llm-perf".to_string())
         .metadata("version".to_string(), env!("CARGO_PKG_VERSION").to_string())
         .metadata(
             "sampling_interval_ms".to_string(),
