@@ -274,7 +274,7 @@ impl ReportBuilder {
         };
 
         let throughput = ThroughputStats {
-            requests_per_second: requests_sent as f64 / duration_secs,
+            requests_per_second: requests_success as f64 / duration_secs,
             input_tokens_per_second: input_tokens as f64 / duration_secs,
             output_tokens_per_second: output_tokens as f64 / duration_secs,
             total_input_tokens: input_tokens,
