@@ -1,6 +1,6 @@
 [package]
 name = "llm-perf"
-version = "0.1.10"
+version = "0.1.11-alpha.0"
 edition = "2024"
 authors = ["Brian Martin <brayniac@gmail.com>"]
 description = "A benchmarking tool for OpenAI-compatible LLM servers"
