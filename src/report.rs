@@ -29,6 +29,10 @@ pub struct BenchmarkReport {
     // Multi-turn conversation metrics
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation: Option<ConversationStats>,
+
+    // Saturation search results
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saturation: Option<crate::saturation::SaturationResults>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +160,7 @@ pub struct ReportBuilder {
     start_time: SystemTime,
     config: Option<crate::config::Config>,
     duration: Option<Duration>,
+    saturation_results: Option<crate::saturation::SaturationResults>,
 }
 
 impl Default for ReportBuilder {
@@ -170,6 +175,7 @@ impl ReportBuilder {
             start_time: SystemTime::now(),
             config: None,
             duration: None,
+            saturation_results: None,
         }
     }
 
@@ -180,6 +186,14 @@ impl ReportBuilder {
 
     pub fn with_duration(mut self, duration: Duration) -> Self {
         self.duration = Some(duration);
+        self
+    }
+
+    pub fn with_saturation_results(
+        mut self,
+        results: crate::saturation::SaturationResults,
+    ) -> Self {
+        self.saturation_results = Some(results);
         self
     }
 
@@ -311,6 +325,7 @@ impl ReportBuilder {
             context_latency,
             context_itl,
             conversation,
+            saturation: self.saturation_results.clone(),
         })
     }
 

@@ -66,7 +66,12 @@ fn run_bench_mode(config_path: &std::path::Path) -> Result<()> {
         println!("   Config: {}", config_path.display());
         println!("   Target: {}", config.endpoint.base_url);
 
-        if let Some(qps) = config.load.qps {
+        if let Some(ref sat) = config.saturation {
+            println!(
+                "   Mode: Saturation Search (concurrency {}..{}, step {:.1}x, window {})",
+                sat.start_concurrency, sat.max_concurrency, sat.step_multiplier, sat.sample_window,
+            );
+        } else if let Some(qps) = config.load.qps {
             println!("   Mode: Fixed QPS ({:.1} req/s)", qps);
         } else {
             println!(

@@ -17,6 +17,8 @@ pub struct Config {
     pub admin: Option<AdminConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logprobs: Option<LogprobsConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saturation: Option<SaturationConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +197,91 @@ impl Default for LogConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaturationConfig {
+    /// SLO thresholds — at least one metric/percentile must be specified
+    pub slo: SloThresholds,
+    /// Starting concurrency level
+    #[serde(default = "default_start_concurrency")]
+    pub start_concurrency: usize,
+    /// Multiplier for each concurrency step (must be > 1.0)
+    #[serde(default = "default_step_multiplier")]
+    pub step_multiplier: f64,
+    /// Duration to sample at each concurrency level (e.g. "60s", "2m")
+    #[serde(default = "default_sample_window")]
+    pub sample_window: String,
+    /// Number of consecutive SLO failures before stopping
+    #[serde(default = "default_stop_after_failures")]
+    pub stop_after_failures: u32,
+    /// Maximum concurrency to try
+    #[serde(default = "default_max_concurrency")]
+    pub max_concurrency: usize,
+    /// Minimum ratio of achieved/expected output throughput (0.0–1.0)
+    #[serde(default = "default_min_throughput_ratio")]
+    pub min_throughput_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SloThresholds {
+    /// TTFT (time to first token) thresholds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttft: Option<SloPercentiles>,
+    /// ITL (inter-token latency) thresholds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub itl: Option<SloPercentiles>,
+    /// TPOT (time per output token) thresholds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tpot: Option<SloPercentiles>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SloPercentiles {
+    /// Maximum acceptable p50 in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p50_ms: Option<f64>,
+    /// Maximum acceptable p99 in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p99_ms: Option<f64>,
+    /// Maximum acceptable p999 in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p999_ms: Option<f64>,
+}
+
+impl SloThresholds {
+    /// Returns true if at least one threshold is configured.
+    pub fn has_any(&self) -> bool {
+        let has = |p: &Option<SloPercentiles>| {
+            p.as_ref()
+                .is_some_and(|s| s.p50_ms.is_some() || s.p99_ms.is_some() || s.p999_ms.is_some())
+        };
+        has(&self.ttft) || has(&self.itl) || has(&self.tpot)
+    }
+}
+
+fn default_start_concurrency() -> usize {
+    1
+}
+
+fn default_step_multiplier() -> f64 {
+    1.5
+}
+
+fn default_sample_window() -> String {
+    "60s".to_string()
+}
+
+fn default_stop_after_failures() -> u32 {
+    3
+}
+
+fn default_max_concurrency() -> usize {
+    512
+}
+
+fn default_min_throughput_ratio() -> f64 {
+    0.9
+}
+
 fn default_timeout() -> u64 {
     60
 }
@@ -280,6 +367,29 @@ impl Config {
             && (logprobs.top_logprobs == 0 || logprobs.top_logprobs > 20)
         {
             anyhow::bail!("logprobs.top_logprobs must be between 1 and 20");
+        }
+
+        if let Some(ref sat) = self.saturation {
+            if !sat.slo.has_any() {
+                anyhow::bail!(
+                    "saturation.slo must have at least one threshold (ttft, itl, or tpot with p50_ms, p99_ms, or p999_ms)"
+                );
+            }
+            if sat.step_multiplier <= 1.0 {
+                anyhow::bail!("saturation.step_multiplier must be greater than 1.0");
+            }
+            if sat.start_concurrency < 1 {
+                anyhow::bail!("saturation.start_concurrency must be at least 1");
+            }
+            if sat.max_concurrency < sat.start_concurrency {
+                anyhow::bail!("saturation.max_concurrency must be >= start_concurrency");
+            }
+            if !(0.0..=1.0).contains(&sat.min_throughput_ratio) {
+                anyhow::bail!("saturation.min_throughput_ratio must be between 0.0 and 1.0");
+            }
+            // Validate sample_window parses
+            humantime::parse_duration(&sat.sample_window)
+                .map_err(|e| anyhow::anyhow!("saturation.sample_window: {}", e))?;
         }
 
         Ok(())
