@@ -1,4 +1,5 @@
-use metriken::{AtomicHistogram, Counter, Gauge, LazyCounter, LazyGauge, metric};
+use metriken::{AtomicHistogram, Counter, Gauge, HistogramGroup, LazyCounter, LazyGauge, metric};
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -85,103 +86,108 @@ pub static CONVERSATION_LATENCY: AtomicHistogram = AtomicHistogram::new(7, 64);
 // Histogram parameters: (grouping_power=7, max_value_power=64)
 // 128 buckets per power of 2 (~0.54% relative precision), covering the full 64-bit range
 
+// Context size indices for histogram groups
+pub const CTX_SMALL: usize = 0;
+pub const CTX_MEDIUM: usize = 1;
+pub const CTX_LARGE: usize = 2;
+pub const CTX_XLARGE: usize = 3;
+pub const CTX_XXLARGE: usize = 4;
+pub const CTX_COUNT: usize = 5;
+
+// Phase indices for histogram groups
+pub const PHASE_REASONING: usize = 0;
+pub const PHASE_CONTENT: usize = 1;
+pub const PHASE_COUNT: usize = 2;
+
 // TTFT — first token of any kind (prefill latency), context-size bucketed
-#[metric(name = "ttft", metadata = { unit = "nanoseconds", context_size = "small" })]
-pub static TTFT_SMALL: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "ttft", metadata = { unit = "nanoseconds", context_size = "medium" })]
-pub static TTFT_MEDIUM: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "ttft", metadata = { unit = "nanoseconds", context_size = "large" })]
-pub static TTFT_LARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "ttft", metadata = { unit = "nanoseconds", context_size = "xlarge" })]
-pub static TTFT_XLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "ttft", metadata = { unit = "nanoseconds", context_size = "xxlarge" })]
-pub static TTFT_XXLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
+#[metric(name = "ttft", metadata = { unit = "nanoseconds" })]
+pub static TTFT: HistogramGroup = HistogramGroup::new(CTX_COUNT, 7, 64);
 
 // TTFT content — first visible content token (user-perceived latency), context-size bucketed
-#[metric(name = "ttft_content", metadata = { unit = "nanoseconds", context_size = "small" })]
-pub static TTFT_CONTENT_SMALL: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "ttft_content", metadata = { unit = "nanoseconds", context_size = "medium" })]
-pub static TTFT_CONTENT_MEDIUM: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "ttft_content", metadata = { unit = "nanoseconds", context_size = "large" })]
-pub static TTFT_CONTENT_LARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "ttft_content", metadata = { unit = "nanoseconds", context_size = "xlarge" })]
-pub static TTFT_CONTENT_XLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "ttft_content", metadata = { unit = "nanoseconds", context_size = "xxlarge" })]
-pub static TTFT_CONTENT_XXLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
+#[metric(name = "ttft_content", metadata = { unit = "nanoseconds" })]
+pub static TTFT_CONTENT: HistogramGroup = HistogramGroup::new(CTX_COUNT, 7, 64);
 
 #[metric(name = "request_latency", metadata = { unit = "nanoseconds" })]
 pub static REQUEST_LATENCY: AtomicHistogram = AtomicHistogram::new(7, 64);
 
 // TPOT — per phase
-#[metric(name = "tpot", metadata = { unit = "nanoseconds", phase = "reasoning" })]
-pub static TPOT_REASONING: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "tpot", metadata = { unit = "nanoseconds", phase = "content" })]
-pub static TPOT_CONTENT: AtomicHistogram = AtomicHistogram::new(7, 64);
+#[metric(name = "tpot", metadata = { unit = "nanoseconds" })]
+pub static TPOT: HistogramGroup = HistogramGroup::new(PHASE_COUNT, 7, 64);
 
 // Think duration — time from first reasoning token to first content token
 #[metric(name = "think_duration", metadata = { unit = "nanoseconds" })]
 pub static THINK_DURATION: AtomicHistogram = AtomicHistogram::new(7, 64);
 
-// ITL — per phase, context-size bucketed
-#[metric(name = "itl", metadata = { unit = "nanoseconds", context_size = "small", phase = "reasoning" })]
-pub static ITL_REASONING_SMALL: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "itl", metadata = { unit = "nanoseconds", context_size = "medium", phase = "reasoning" })]
-pub static ITL_REASONING_MEDIUM: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "itl", metadata = { unit = "nanoseconds", context_size = "large", phase = "reasoning" })]
-pub static ITL_REASONING_LARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "itl", metadata = { unit = "nanoseconds", context_size = "xlarge", phase = "reasoning" })]
-pub static ITL_REASONING_XLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "itl", metadata = { unit = "nanoseconds", context_size = "xxlarge", phase = "reasoning" })]
-pub static ITL_REASONING_XXLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
+// ITL — per phase × context size
+// Layout: [reasoning_small..reasoning_xxlarge, content_small..content_xxlarge]
+pub const ITL_ENTRIES: usize = PHASE_COUNT * CTX_COUNT;
+#[metric(name = "itl", metadata = { unit = "nanoseconds" })]
+pub static ITL: HistogramGroup = HistogramGroup::new(ITL_ENTRIES, 7, 64);
 
-#[metric(name = "itl", metadata = { unit = "nanoseconds", context_size = "small", phase = "content" })]
-pub static ITL_CONTENT_SMALL: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "itl", metadata = { unit = "nanoseconds", context_size = "medium", phase = "content" })]
-pub static ITL_CONTENT_MEDIUM: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "itl", metadata = { unit = "nanoseconds", context_size = "large", phase = "content" })]
-pub static ITL_CONTENT_LARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "itl", metadata = { unit = "nanoseconds", context_size = "xlarge", phase = "content" })]
-pub static ITL_CONTENT_XLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
-#[metric(name = "itl", metadata = { unit = "nanoseconds", context_size = "xxlarge", phase = "content" })]
-pub static ITL_CONTENT_XXLARGE: AtomicHistogram = AtomicHistogram::new(7, 64);
+/// Map input token count to a TTFT context-size index.
+fn ttft_context_index(input_tokens: u64) -> usize {
+    match input_tokens {
+        0..=200 => CTX_SMALL,
+        201..=500 => CTX_MEDIUM,
+        501..=2000 => CTX_LARGE,
+        2001..=8000 => CTX_XLARGE,
+        _ => CTX_XXLARGE,
+    }
+}
 
-// Aggregation arrays
-pub static ALL_TTFT: [&AtomicHistogram; 5] = [
-    &TTFT_SMALL,
-    &TTFT_MEDIUM,
-    &TTFT_LARGE,
-    &TTFT_XLARGE,
-    &TTFT_XXLARGE,
-];
+/// Map input token count to an ITL context-size index.
+fn itl_context_index(input_tokens: u64) -> usize {
+    match input_tokens {
+        0..=200 => CTX_SMALL,
+        201..=500 => CTX_MEDIUM,
+        501..=1000 => CTX_LARGE,
+        1001..=2000 => CTX_XLARGE,
+        _ => CTX_XXLARGE,
+    }
+}
 
-pub static ALL_TTFT_CONTENT: [&AtomicHistogram; 5] = [
-    &TTFT_CONTENT_SMALL,
-    &TTFT_CONTENT_MEDIUM,
-    &TTFT_CONTENT_LARGE,
-    &TTFT_CONTENT_XLARGE,
-    &TTFT_CONTENT_XXLARGE,
-];
-
-pub static ALL_ITL: [&AtomicHistogram; 10] = [
-    &ITL_REASONING_SMALL,
-    &ITL_REASONING_MEDIUM,
-    &ITL_REASONING_LARGE,
-    &ITL_REASONING_XLARGE,
-    &ITL_REASONING_XXLARGE,
-    &ITL_CONTENT_SMALL,
-    &ITL_CONTENT_MEDIUM,
-    &ITL_CONTENT_LARGE,
-    &ITL_CONTENT_XLARGE,
-    &ITL_CONTENT_XXLARGE,
-];
-
-pub static ALL_TPOT: [&AtomicHistogram; 2] = [&TPOT_REASONING, &TPOT_CONTENT];
+/// Map phase to a phase offset.
+fn phase_index(phase: Phase) -> usize {
+    match phase {
+        Phase::Reasoning => PHASE_REASONING,
+        Phase::Content => PHASE_CONTENT,
+    }
+}
 
 pub struct Metrics;
 
 impl Metrics {
     pub fn init() {
-        // Metriken metrics are automatically registered via the #[metric] attribute
+        let ctx_names = ["small", "medium", "large", "xlarge", "xxlarge"];
+        let phase_names = ["reasoning", "content"];
+
+        // TTFT and TTFT_CONTENT per-index metadata
+        for (idx, name) in ctx_names.iter().enumerate() {
+            let meta = HashMap::from([("context_size".to_string(), name.to_string())]);
+            TTFT.set_metadata(idx, meta.clone());
+            TTFT_CONTENT.set_metadata(idx, meta);
+        }
+
+        // TPOT per-index metadata
+        for (idx, name) in phase_names.iter().enumerate() {
+            TPOT.set_metadata(
+                idx,
+                HashMap::from([("phase".to_string(), name.to_string())]),
+            );
+        }
+
+        // ITL per-index metadata (phase × context_size)
+        for (p_idx, p_name) in phase_names.iter().enumerate() {
+            for (c_idx, c_name) in ctx_names.iter().enumerate() {
+                ITL.set_metadata(
+                    p_idx * CTX_COUNT + c_idx,
+                    HashMap::from([
+                        ("phase".to_string(), p_name.to_string()),
+                        ("context_size".to_string(), c_name.to_string()),
+                    ]),
+                );
+            }
+        }
     }
 
     pub fn record_request_sent() {
@@ -225,36 +231,17 @@ impl Metrics {
 
     /// Record TTFT — first token of any kind (prefill latency).
     pub fn record_ttft(duration: Duration, input_tokens: u64) {
-        let nanos = duration.as_nanos() as u64;
-        let histogram = match input_tokens {
-            0..=200 => &TTFT_SMALL,
-            201..=500 => &TTFT_MEDIUM,
-            501..=2000 => &TTFT_LARGE,
-            2001..=8000 => &TTFT_XLARGE,
-            _ => &TTFT_XXLARGE,
-        };
-        let _ = histogram.increment(nanos);
+        let _ = TTFT.increment(ttft_context_index(input_tokens), duration.as_nanos() as u64);
     }
 
     /// Record TTFT content — first visible content token.
     pub fn record_ttft_content(duration: Duration, input_tokens: u64) {
-        let nanos = duration.as_nanos() as u64;
-        let histogram = match input_tokens {
-            0..=200 => &TTFT_CONTENT_SMALL,
-            201..=500 => &TTFT_CONTENT_MEDIUM,
-            501..=2000 => &TTFT_CONTENT_LARGE,
-            2001..=8000 => &TTFT_CONTENT_XLARGE,
-            _ => &TTFT_CONTENT_XXLARGE,
-        };
-        let _ = histogram.increment(nanos);
+        let _ =
+            TTFT_CONTENT.increment(ttft_context_index(input_tokens), duration.as_nanos() as u64);
     }
 
     pub fn record_tpot(duration: Duration, phase: Phase) {
-        let histogram = match phase {
-            Phase::Reasoning => &TPOT_REASONING,
-            Phase::Content => &TPOT_CONTENT,
-        };
-        let _ = histogram.increment(duration.as_nanos() as u64);
+        let _ = TPOT.increment(phase_index(phase), duration.as_nanos() as u64);
     }
 
     pub fn record_think_duration(duration: Duration) {
@@ -262,20 +249,8 @@ impl Metrics {
     }
 
     pub fn record_itl(duration: Duration, input_tokens: u64, phase: Phase) {
-        let nanos = duration.as_nanos() as u64;
-        let histogram = match (phase, input_tokens) {
-            (Phase::Reasoning, 0..=200) => &ITL_REASONING_SMALL,
-            (Phase::Reasoning, 201..=500) => &ITL_REASONING_MEDIUM,
-            (Phase::Reasoning, 501..=1000) => &ITL_REASONING_LARGE,
-            (Phase::Reasoning, 1001..=2000) => &ITL_REASONING_XLARGE,
-            (Phase::Reasoning, _) => &ITL_REASONING_XXLARGE,
-            (Phase::Content, 0..=200) => &ITL_CONTENT_SMALL,
-            (Phase::Content, 201..=500) => &ITL_CONTENT_MEDIUM,
-            (Phase::Content, 501..=1000) => &ITL_CONTENT_LARGE,
-            (Phase::Content, 1001..=2000) => &ITL_CONTENT_XLARGE,
-            (Phase::Content, _) => &ITL_CONTENT_XXLARGE,
-        };
-        let _ = histogram.increment(nanos);
+        let idx = phase_index(phase) * CTX_COUNT + itl_context_index(input_tokens);
+        let _ = ITL.increment(idx, duration.as_nanos() as u64);
     }
 
     pub fn record_latency(duration: Duration) {

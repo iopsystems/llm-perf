@@ -1,4 +1,5 @@
 use chrono::{Timelike, Utc};
+use histogram::SampleQuantiles;
 use metriken::histogram::Histogram;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -8,10 +9,10 @@ use tokio::time::{Instant, interval_at, timeout};
 
 use crate::config::Config;
 use crate::metrics::{
-    ALL_TPOT, CONVERSATIONS_SENT, CONVERSATIONS_SUCCESS, ERRORS_CONNECTION, ERRORS_HTTP_4XX,
-    ERRORS_HTTP_5XX, ERRORS_OTHER, ERRORS_PARSE, REQUEST_LATENCY, REQUESTS_CANCELED,
-    REQUESTS_ERROR, REQUESTS_INFLIGHT, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT, RUNNING,
-    TOKENS_INPUT, TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING, TURNS_TOTAL,
+    CONVERSATIONS_SENT, CONVERSATIONS_SUCCESS, ERRORS_CONNECTION, ERRORS_HTTP_4XX, ERRORS_HTTP_5XX,
+    ERRORS_OTHER, ERRORS_PARSE, REQUEST_LATENCY, REQUESTS_CANCELED, REQUESTS_ERROR,
+    REQUESTS_INFLIGHT, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT, RUNNING, TOKENS_INPUT,
+    TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING, TPOT, TURNS_TOTAL,
 };
 
 /// Print with timestamp prefix
@@ -49,14 +50,13 @@ struct MetricsSnapshot {
 
 impl MetricsSnapshot {
     fn merge_tpot() -> Option<Histogram> {
+        let histograms = TPOT.load_all()?;
         let mut merged: Option<Histogram> = None;
-        for h in &ALL_TPOT {
-            if let Some(loaded) = h.load() {
-                merged = Some(match merged {
-                    Some(m) => m.wrapping_add(&loaded).ok()?,
-                    None => loaded,
-                });
-            }
+        for h in histograms {
+            merged = Some(match merged {
+                Some(m) => m.wrapping_add(&h).ok()?,
+                None => h,
+            });
         }
         merged
     }
@@ -259,42 +259,38 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         if let (Some(current), Some(previous)) = (&current_tpot, &previous_snapshot.tpot_histogram)
         {
             if let Ok(delta) = current.wrapping_sub(previous)
-                && let Ok(Some(percentiles)) = delta.percentiles(&[50.0, 90.0, 95.0, 99.0])
-                && percentiles.len() >= 4
+                && let Ok(Some(result)) = delta.quantiles(&[0.5, 0.9, 0.95, 0.99])
             {
-                let tpot_p50_ms = percentiles[0].1.end() / 1_000_000;
-                let tpot_p90_ms = percentiles[1].1.end() / 1_000_000;
-                let tpot_p95_ms = percentiles[2].1.end() / 1_000_000;
-                let tpot_p99_ms = percentiles[3].1.end() / 1_000_000;
-
-                if tpot_p50_ms > 0 {
-                    // Only show if we have TPOT data
+                let values: Vec<u64> = result
+                    .entries()
+                    .values()
+                    .map(|b| b.end() / 1_000_000)
+                    .collect();
+                if values.len() == 4 && values[0] > 0 {
                     output!(
                         "TPOT (ms): p50: {} p90: {} p95: {} p99: {}",
-                        tpot_p50_ms,
-                        tpot_p90_ms,
-                        tpot_p95_ms,
-                        tpot_p99_ms
+                        values[0],
+                        values[1],
+                        values[2],
+                        values[3]
                     );
                 }
             }
         } else if let Some(current) = &current_tpot {
             // First window - use absolute values
-            if let Ok(Some(percentiles)) = current.percentiles(&[50.0, 90.0, 95.0, 99.0])
-                && percentiles.len() >= 4
-            {
-                let tpot_p50_ms = percentiles[0].1.end() / 1_000_000;
-                let tpot_p90_ms = percentiles[1].1.end() / 1_000_000;
-                let tpot_p95_ms = percentiles[2].1.end() / 1_000_000;
-                let tpot_p99_ms = percentiles[3].1.end() / 1_000_000;
-
-                if tpot_p50_ms > 0 {
+            if let Ok(Some(result)) = current.quantiles(&[0.5, 0.9, 0.95, 0.99]) {
+                let values: Vec<u64> = result
+                    .entries()
+                    .values()
+                    .map(|b| b.end() / 1_000_000)
+                    .collect();
+                if values.len() == 4 && values[0] > 0 {
                     output!(
                         "TPOT (ms): p50: {} p90: {} p95: {} p99: {}",
-                        tpot_p50_ms,
-                        tpot_p90_ms,
-                        tpot_p95_ms,
-                        tpot_p99_ms
+                        values[0],
+                        values[1],
+                        values[2],
+                        values[3]
                     );
                 }
             }
@@ -305,39 +301,40 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
             (&current_request, &previous_snapshot.request_histogram)
         {
             if let Ok(delta) = current.wrapping_sub(previous)
-                && let Ok(Some(percentiles)) = delta.percentiles(&[50.0, 90.0, 95.0, 99.0])
-                && percentiles.len() >= 4
+                && let Ok(Some(result)) = delta.quantiles(&[0.5, 0.9, 0.95, 0.99])
             {
-                let req_p50_ms = percentiles[0].1.end() / 1_000_000;
-                let req_p90_ms = percentiles[1].1.end() / 1_000_000;
-                let req_p95_ms = percentiles[2].1.end() / 1_000_000;
-                let req_p99_ms = percentiles[3].1.end() / 1_000_000;
-
-                output!(
-                    "Request Latency (ms): p50: {} p90: {} p95: {} p99: {}",
-                    req_p50_ms,
-                    req_p90_ms,
-                    req_p95_ms,
-                    req_p99_ms
-                );
+                let values: Vec<u64> = result
+                    .entries()
+                    .values()
+                    .map(|b| b.end() / 1_000_000)
+                    .collect();
+                if values.len() == 4 {
+                    output!(
+                        "Request Latency (ms): p50: {} p90: {} p95: {} p99: {}",
+                        values[0],
+                        values[1],
+                        values[2],
+                        values[3]
+                    );
+                }
             }
         } else if let Some(current) = &current_request {
             // First window - use absolute values
-            if let Ok(Some(percentiles)) = current.percentiles(&[50.0, 90.0, 95.0, 99.0])
-                && percentiles.len() >= 4
-            {
-                let req_p50_ms = percentiles[0].1.end() / 1_000_000;
-                let req_p90_ms = percentiles[1].1.end() / 1_000_000;
-                let req_p95_ms = percentiles[2].1.end() / 1_000_000;
-                let req_p99_ms = percentiles[3].1.end() / 1_000_000;
-
-                output!(
-                    "Request Latency (ms): p50: {} p90: {} p95: {} p99: {}",
-                    req_p50_ms,
-                    req_p90_ms,
-                    req_p95_ms,
-                    req_p99_ms
-                );
+            if let Ok(Some(result)) = current.quantiles(&[0.5, 0.9, 0.95, 0.99]) {
+                let values: Vec<u64> = result
+                    .entries()
+                    .values()
+                    .map(|b| b.end() / 1_000_000)
+                    .collect();
+                if values.len() == 4 {
+                    output!(
+                        "Request Latency (ms): p50: {} p90: {} p95: {} p99: {}",
+                        values[0],
+                        values[1],
+                        values[2],
+                        values[3]
+                    );
+                }
             }
         }
 

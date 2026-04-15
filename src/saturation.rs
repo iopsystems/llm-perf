@@ -6,7 +6,8 @@
 use crate::config::{SaturationConfig, SloPercentiles};
 use crate::metrics;
 
-use metriken::AtomicHistogram;
+use histogram::SampleQuantiles;
+use metriken::HistogramGroup;
 use metriken::histogram::Histogram;
 use serde::Serialize;
 use std::time::Instant;
@@ -110,9 +111,9 @@ impl SaturationSearchState {
     pub fn initialize(&mut self) {
         self.current_concurrency = self.config.start_concurrency;
         self.step_start = Instant::now();
-        self.step_ttft_snapshot = merge_histograms(&metrics::ALL_TTFT);
-        self.step_itl_snapshot = merge_histograms(&metrics::ALL_ITL);
-        self.step_tpot_snapshot = merge_histograms(&metrics::ALL_TPOT);
+        self.step_ttft_snapshot = merge_histogram_group(&metrics::TTFT);
+        self.step_itl_snapshot = merge_histogram_group(&metrics::ITL);
+        self.step_tpot_snapshot = merge_histogram_group(&metrics::TPOT);
         self.step_output_tokens = output_tokens_total();
         self.step_requests_success = metrics::REQUESTS_SUCCESS.value();
     }
@@ -137,9 +138,9 @@ impl SaturationSearchState {
         let elapsed_secs = self.step_start.elapsed().as_secs_f64();
 
         // Snapshot current state
-        let current_ttft = merge_histograms(&metrics::ALL_TTFT);
-        let current_itl = merge_histograms(&metrics::ALL_ITL);
-        let current_tpot = merge_histograms(&metrics::ALL_TPOT);
+        let current_ttft = merge_histogram_group(&metrics::TTFT);
+        let current_itl = merge_histogram_group(&metrics::ITL);
+        let current_tpot = merge_histogram_group(&metrics::TPOT);
         let current_output_tokens = output_tokens_total();
         let current_requests_success = metrics::REQUESTS_SUCCESS.value();
 
@@ -356,16 +357,15 @@ fn check_percentile_slo(
     None
 }
 
-/// Merge an array of context-bucketed AtomicHistograms into a single Histogram.
-fn merge_histograms(histograms: &[&AtomicHistogram]) -> Option<Histogram> {
+/// Merge all histograms in a HistogramGroup into a single Histogram.
+fn merge_histogram_group(group: &HistogramGroup) -> Option<Histogram> {
+    let histograms = group.load_all()?;
     let mut merged: Option<Histogram> = None;
     for h in histograms {
-        if let Some(loaded) = h.load() {
-            merged = Some(match merged {
-                Some(existing) => existing.checked_add(&loaded).unwrap_or(existing),
-                None => loaded,
-            });
-        }
+        merged = Some(match merged {
+            Some(existing) => existing.checked_add(&h).unwrap_or(existing),
+            None => h,
+        });
     }
     merged
 }
@@ -389,15 +389,16 @@ fn extract_percentiles_ms(histogram: &Option<Histogram>) -> (f64, f64, f64) {
     let mut p99 = 0.0;
     let mut p999 = 0.0;
 
-    if let Ok(Some(percentiles)) = hist.percentiles(&[50.0, 99.0, 99.9]) {
-        for (pct, bucket) in percentiles.iter() {
-            let value_ms = bucket.end() as f64 / 1_000_000.0;
-            match pct.round() as u32 {
-                50 => p50 = value_ms,
-                99 => p99 = value_ms,
-                // 99.9 rounds to 100
-                _ => p999 = value_ms,
-            }
+    if let Ok(Some(result)) = hist.quantiles(&[0.5, 0.99, 0.999]) {
+        let values: Vec<f64> = result
+            .entries()
+            .values()
+            .map(|b| b.end() as f64 / 1_000_000.0)
+            .collect();
+        if values.len() == 3 {
+            p50 = values[0];
+            p99 = values[1];
+            p999 = values[2];
         }
     }
 

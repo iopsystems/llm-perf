@@ -44,69 +44,9 @@ fn vars_json_endpoint()
 }
 
 async fn prometheus_metrics() -> Result<impl warp::Reply, Infallible> {
-    use metriken::Value;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let mut lines = Vec::new();
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time should be after UNIX epoch")
-        .as_millis();
-
-    for metric in &metriken::metrics() {
-        let name = metric.name().replace('/', "_");
-
-        match metric.value() {
-            Some(Value::Counter(value)) => {
-                if let Some(description) = metric.description() {
-                    lines.push(format!(
-                        "# TYPE {} counter\n# HELP {} {}\n{} {} {}",
-                        name, name, description, name, value, timestamp
-                    ));
-                } else {
-                    lines.push(format!(
-                        "# TYPE {} counter\n{} {} {}",
-                        name, name, value, timestamp
-                    ));
-                }
-            }
-            Some(Value::Gauge(value)) => {
-                if let Some(description) = metric.description() {
-                    lines.push(format!(
-                        "# TYPE {} gauge\n# HELP {} {}\n{} {} {}",
-                        name, name, description, name, value, timestamp
-                    ));
-                } else {
-                    lines.push(format!(
-                        "# TYPE {} gauge\n{} {} {}",
-                        name, name, value, timestamp
-                    ));
-                }
-            }
-            Some(Value::Other(other)) => {
-                // Handle histograms
-                if let Some(histogram) = other.downcast_ref::<metriken::AtomicHistogram>()
-                    && let Some(loaded) = histogram.load()
-                {
-                    // Export common percentiles
-                    let percentiles = [50.0, 90.0, 95.0, 99.0, 99.9];
-                    if let Ok(Some(values)) = loaded.percentiles(&percentiles) {
-                        for (percentile, bucket) in values.iter() {
-                            let value = bucket.end();
-                            lines.push(format!(
-                                "# TYPE {} gauge\n{}{{percentile=\"{}\"}} {} {}",
-                                name, name, percentile, value, timestamp
-                            ));
-                        }
-                    }
-                }
-            }
-            _ => continue,
-        }
-    }
-
-    lines.sort();
-    let content = lines.join("\n") + "\n# EOF\n";
+    let options = metriken_exposition::PrometheusOptions::default()
+        .with_percentiles(vec![0.5, 0.9, 0.95, 0.99, 0.999]);
+    let content = metriken_exposition::prometheus_text(&options);
     Ok(warp::reply::with_header(
         content,
         "content-type",
@@ -115,10 +55,12 @@ async fn prometheus_metrics() -> Result<impl warp::Reply, Infallible> {
 }
 
 async fn json_metrics() -> Result<impl warp::Reply, Infallible> {
+    use histogram::SampleQuantiles;
     use metriken::Value;
     use serde_json::json;
 
     let mut metrics = serde_json::Map::new();
+    let quantile_values = [0.5, 0.9, 0.95, 0.99, 0.999];
 
     for metric in &metriken::metrics() {
         let name = metric.name();
@@ -130,16 +72,30 @@ async fn json_metrics() -> Result<impl warp::Reply, Infallible> {
             Some(Value::Gauge(value)) => {
                 metrics.insert(name.to_string(), json!(value));
             }
-            Some(Value::Other(other)) => {
-                // Handle histograms
-                if let Some(histogram) = other.downcast_ref::<metriken::AtomicHistogram>()
-                    && let Some(loaded) = histogram.load()
+            Some(Value::Histogram(histogram)) => {
+                if let Some(loaded) = histogram.load()
+                    && let Ok(Some(result)) = loaded.quantiles(&quantile_values)
                 {
-                    // Export common percentiles
-                    let percentiles = [50.0, 90.0, 95.0, 99.0, 99.9];
-                    if let Ok(Some(values)) = loaded.percentiles(&percentiles) {
-                        for (percentile, bucket) in values.iter() {
-                            let key = format!("{}/p{}", name, (percentile * 10.0) as u32);
+                    for (quantile, bucket) in result.entries() {
+                        let key = format!("{}/p{}", name, (quantile.as_f64() * 1000.0) as u32);
+                        metrics.insert(key, json!(bucket.end()));
+                    }
+                }
+            }
+            Some(Value::HistogramGroup(group)) => {
+                let snapshot = group.metadata_snapshot();
+                for (idx, meta) in &snapshot {
+                    if let Some(loaded) = group.load_histogram(*idx)
+                        && let Ok(Some(result)) = loaded.quantiles(&quantile_values)
+                    {
+                        let suffix = format_metadata_suffix(meta);
+                        for (quantile, bucket) in result.entries() {
+                            let key = format!(
+                                "{}{}/p{}",
+                                name,
+                                suffix,
+                                (quantile.as_f64() * 1000.0) as u32
+                            );
                             metrics.insert(key, json!(bucket.end()));
                         }
                     }
@@ -153,9 +109,11 @@ async fn json_metrics() -> Result<impl warp::Reply, Infallible> {
 }
 
 async fn human_metrics() -> Result<impl warp::Reply, Infallible> {
+    use histogram::SampleQuantiles;
     use metriken::Value;
 
     let mut lines = Vec::new();
+    let quantile_values = [0.5, 0.9, 0.95, 0.99, 0.999];
 
     for metric in &metriken::metrics() {
         let name = metric.name();
@@ -167,19 +125,33 @@ async fn human_metrics() -> Result<impl warp::Reply, Infallible> {
             Some(Value::Gauge(value)) => {
                 lines.push(format!("{}: {}", name, value));
             }
-            Some(Value::Other(other)) => {
-                // Handle histograms
-                if let Some(histogram) = other.downcast_ref::<metriken::AtomicHistogram>()
-                    && let Some(loaded) = histogram.load()
+            Some(Value::Histogram(histogram)) => {
+                if let Some(loaded) = histogram.load()
+                    && let Ok(Some(result)) = loaded.quantiles(&quantile_values)
                 {
-                    // Export common percentiles
-                    let percentiles = [50.0, 90.0, 95.0, 99.0, 99.9];
-                    if let Ok(Some(values)) = loaded.percentiles(&percentiles) {
-                        for (percentile, bucket) in values.iter() {
+                    for (quantile, bucket) in result.entries() {
+                        lines.push(format!(
+                            "{}/p{}: {}",
+                            name,
+                            (quantile.as_f64() * 1000.0) as u32,
+                            bucket.end()
+                        ));
+                    }
+                }
+            }
+            Some(Value::HistogramGroup(group)) => {
+                let snapshot = group.metadata_snapshot();
+                for (idx, meta) in &snapshot {
+                    if let Some(loaded) = group.load_histogram(*idx)
+                        && let Ok(Some(result)) = loaded.quantiles(&quantile_values)
+                    {
+                        let suffix = format_metadata_suffix(meta);
+                        for (quantile, bucket) in result.entries() {
                             lines.push(format!(
-                                "{}/p{}: {}",
+                                "{}{}/p{}: {}",
                                 name,
-                                (percentile * 10.0) as u32,
+                                suffix,
+                                (quantile.as_f64() * 1000.0) as u32,
                                 bucket.end()
                             ));
                         }
@@ -197,6 +169,16 @@ async fn human_metrics() -> Result<impl warp::Reply, Infallible> {
         "content-type",
         "text/plain; charset=utf-8",
     ))
+}
+
+/// Format metadata as a path suffix (e.g., "/reasoning/small").
+fn format_metadata_suffix(meta: &std::collections::HashMap<String, String>) -> String {
+    if meta.is_empty() {
+        return String::new();
+    }
+    let mut parts: Vec<&str> = meta.values().map(|v| v.as_str()).collect();
+    parts.sort();
+    format!("/{}", parts.join("/"))
 }
 
 use log::info;
