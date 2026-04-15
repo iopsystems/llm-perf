@@ -133,14 +133,28 @@ fn save_summary(stats: &HashMap<String, CategoryStats>, path: &Path) -> Result<(
     Ok(())
 }
 
-fn print_status(category: &str, counters: &ProgressCounters, start: Instant) {
+fn format_eta(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}h{}m{}s", secs / 3600, (secs % 3600) / 60, secs % 60)
+    } else {
+        format!("{}m{}s", secs / 60, secs % 60)
+    }
+}
+
+fn print_status(
+    category: &str,
+    counters: &ProgressCounters,
+    start: Instant,
+    overall: &ProgressCounters,
+    overall_start: Instant,
+) {
     let completed = counters.completed.load(Ordering::Relaxed);
     let correct = counters.correct.load(Ordering::Relaxed);
     let wrong = counters.wrong.load(Ordering::Relaxed);
     let failures = counters.extraction_failures.load(Ordering::Relaxed);
     let errors = counters.errors.load(Ordering::Relaxed);
-    let prompt_tokens = counters.prompt_tokens.load(Ordering::Relaxed);
-    let completion_tokens = counters.completion_tokens.load(Ordering::Relaxed);
+    let prompt_tokens = overall.prompt_tokens.load(Ordering::Relaxed);
+    let completion_tokens = overall.completion_tokens.load(Ordering::Relaxed);
     let total = correct + wrong + errors;
     let acc = if total > 0 {
         correct as f64 / total as f64 * 100.0
@@ -161,25 +175,27 @@ fn print_status(category: &str, counters: &ProgressCounters, start: Instant) {
         msg.push_str(&format!(", {} errors", errors));
     }
 
-    // Token throughput
-    if elapsed_secs > 0.0 && completion_tokens > 0 {
-        let prompt_tps = prompt_tokens as f64 / elapsed_secs;
-        let completion_tps = completion_tokens as f64 / elapsed_secs;
+    // Token throughput (use overall elapsed for accurate rates)
+    let overall_elapsed = overall_start.elapsed().as_secs_f64();
+    if overall_elapsed > 0.0 && completion_tokens > 0 {
+        let prompt_tps = prompt_tokens as f64 / overall_elapsed;
+        let completion_tps = completion_tokens as f64 / overall_elapsed;
         msg.push_str(&format!(
             ", {:.0} prompt tk/s, {:.0} completion tk/s",
             prompt_tps, completion_tps
         ));
     }
 
-    // ETA
-    if completed > 0 && completed < counters.total {
-        let remaining = counters.total - completed;
-        let secs_per_item = elapsed_secs / completed as f64;
-        let eta_secs = (remaining as f64 * secs_per_item) as u64;
-        msg.push_str(&format!(", ETA {}m{}s", eta_secs / 60, eta_secs % 60));
+    // Overall ETA
+    let overall_completed = overall.completed.load(Ordering::Relaxed);
+    if overall_completed > 0 && overall_completed < overall.total {
+        let overall_remaining = overall.total - overall_completed;
+        let secs_per_item = overall_elapsed / overall_completed as f64;
+        let eta_secs = (overall_remaining as f64 * secs_per_item) as u64;
+        msg.push_str(&format!(", ETA {}", format_eta(eta_secs)));
     }
 
-    msg.push_str(&format!(", {}m{}s elapsed", elapsed / 60, elapsed % 60));
+    msg.push_str(&format!(", {} elapsed", format_eta(elapsed)));
     eprintln!("{}", msg);
 }
 
@@ -218,6 +234,25 @@ pub async fn run_evaluation(
     };
 
     let system_prompt_template = &config.inference.system_prompt;
+
+    // Compute overall question count for ETA across all categories
+    let overall_total: u32 = categories
+        .iter()
+        .filter_map(|cat| test_data.get(cat))
+        .map(|qs| qs.len() as u32)
+        .sum();
+
+    let overall_start = Instant::now();
+    let overall_counters = Arc::new(ProgressCounters {
+        completed: AtomicU32::new(0),
+        correct: AtomicU32::new(0),
+        wrong: AtomicU32::new(0),
+        extraction_failures: AtomicU32::new(0),
+        errors: AtomicU32::new(0),
+        prompt_tokens: AtomicU32::new(0),
+        completion_tokens: AtomicU32::new(0),
+        total: overall_total,
+    });
 
     for category in &categories {
         let test_questions = match test_data.get(category) {
@@ -271,6 +306,20 @@ pub async fn run_evaluation(
         let total = test_questions.len();
         let already_done = existing_ids.len();
 
+        // Account for already-completed questions in overall counters
+        overall_counters
+            .completed
+            .fetch_add(already_done as u32, Ordering::Relaxed);
+        overall_counters
+            .correct
+            .fetch_add(cat_stats.correct, Ordering::Relaxed);
+        overall_counters
+            .wrong
+            .fetch_add(cat_stats.wrong, Ordering::Relaxed);
+        overall_counters
+            .extraction_failures
+            .fetch_add(cat_stats.extraction_failures, Ordering::Relaxed);
+
         if new_questions.is_empty() {
             eprintln!(
                 "{}: all {}/{} questions already completed, skipping.",
@@ -304,11 +353,18 @@ pub async fn run_evaluation(
 
         // Spawn periodic status printer (every 60s)
         let status_counters = Arc::clone(&counters);
+        let status_overall = Arc::clone(&overall_counters);
         let status_category = category.clone();
         let status_handle = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                print_status(&status_category, &status_counters, cat_start);
+                print_status(
+                    &status_category,
+                    &status_counters,
+                    cat_start,
+                    &status_overall,
+                    overall_start,
+                );
             }
         });
 
@@ -326,6 +382,7 @@ pub async fn run_evaluation(
             let stats = Arc::clone(&stats);
             let token_stats = Arc::clone(&token_stats);
             let counters = Arc::clone(&counters);
+            let overall_counters = Arc::clone(&overall_counters);
             let result_path = result_path.clone();
             let summary_path = summary_path.clone();
             let system_prompt = system_prompt.clone();
@@ -391,6 +448,8 @@ pub async fn run_evaluation(
                         }
                         counters.errors.fetch_add(1, Ordering::Relaxed);
                         counters.completed.fetch_add(1, Ordering::Relaxed);
+                        overall_counters.errors.fetch_add(1, Ordering::Relaxed);
+                        overall_counters.completed.fetch_add(1, Ordering::Relaxed);
                         return;
                     }
                 };
@@ -401,10 +460,10 @@ pub async fn run_evaluation(
                     ts.prompt_tokens.push(response.usage.prompt_tokens);
                     ts.completion_tokens.push(response.usage.completion_tokens);
                 }
-                counters
+                overall_counters
                     .prompt_tokens
                     .fetch_add(response.usage.prompt_tokens, Ordering::Relaxed);
-                counters
+                overall_counters
                     .completion_tokens
                     .fetch_add(response.usage.completion_tokens, Ordering::Relaxed);
 
@@ -460,16 +519,22 @@ pub async fn run_evaluation(
                         Some(p) if p == &question.answer => {
                             s.correct += 1;
                             counters.correct.fetch_add(1, Ordering::Relaxed);
+                            overall_counters.correct.fetch_add(1, Ordering::Relaxed);
                         }
                         Some(_) => {
                             s.wrong += 1;
                             counters.wrong.fetch_add(1, Ordering::Relaxed);
+                            overall_counters.wrong.fetch_add(1, Ordering::Relaxed);
                         }
                         None => {
                             s.wrong += 1;
                             s.extraction_failures += 1;
                             counters.wrong.fetch_add(1, Ordering::Relaxed);
                             counters.extraction_failures.fetch_add(1, Ordering::Relaxed);
+                            overall_counters.wrong.fetch_add(1, Ordering::Relaxed);
+                            overall_counters
+                                .extraction_failures
+                                .fetch_add(1, Ordering::Relaxed);
                             if verbosity >= 2 {
                                 // Show the tail of the response where the answer should be
                                 let tail = if result.response.len() > 300 {
@@ -510,6 +575,7 @@ pub async fn run_evaluation(
                 }
 
                 counters.completed.fetch_add(1, Ordering::Relaxed);
+                overall_counters.completed.fetch_add(1, Ordering::Relaxed);
             });
 
             handles.push(handle);
@@ -524,7 +590,13 @@ pub async fn run_evaluation(
         status_handle.abort();
 
         // Print final status for this category
-        print_status(category, &counters, cat_start);
+        print_status(
+            category,
+            &counters,
+            cat_start,
+            &overall_counters,
+            overall_start,
+        );
 
         // Collect final stats
         let final_stats = stats.lock().await.clone();
