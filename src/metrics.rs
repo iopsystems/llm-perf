@@ -16,6 +16,7 @@ pub enum ErrorType {
     Http5xx(u16),
     Parse,
     Timeout,
+    Stream,
     Other,
 }
 
@@ -54,6 +55,8 @@ pub static ERRORS_HTTP_4XX: LazyCounter = LazyCounter::new(Counter::default);
 pub static ERRORS_HTTP_5XX: LazyCounter = LazyCounter::new(Counter::default);
 #[metric(name = "errors", metadata = { "type" = "parse" })]
 pub static ERRORS_PARSE: LazyCounter = LazyCounter::new(Counter::default);
+#[metric(name = "errors", metadata = { "type" = "stream" })]
+pub static ERRORS_STREAM: LazyCounter = LazyCounter::new(Counter::default);
 #[metric(name = "errors", metadata = { "type" = "other" })]
 pub static ERRORS_OTHER: LazyCounter = LazyCounter::new(Counter::default);
 
@@ -206,6 +209,7 @@ impl Metrics {
                         ErrorType::Http4xx(_) => ERRORS_HTTP_4XX.increment(),
                         ErrorType::Http5xx(_) => ERRORS_HTTP_5XX.increment(),
                         ErrorType::Parse => ERRORS_PARSE.increment(),
+                        ErrorType::Stream => ERRORS_STREAM.increment(),
                         ErrorType::Other => ERRORS_OTHER.increment(),
                         ErrorType::Timeout => unreachable!(),
                     };

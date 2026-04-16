@@ -9,7 +9,7 @@ use tokio::time::{Instant, interval_at, timeout};
 use crate::config::Config;
 use crate::metrics::{
     ALL_TPOT, CONVERSATIONS_SENT, CONVERSATIONS_SUCCESS, ERRORS_CONNECTION, ERRORS_HTTP_4XX,
-    ERRORS_HTTP_5XX, ERRORS_OTHER, ERRORS_PARSE, REQUEST_LATENCY, REQUESTS_CANCELED,
+    ERRORS_HTTP_5XX, ERRORS_OTHER, ERRORS_PARSE, ERRORS_STREAM, REQUEST_LATENCY, REQUESTS_CANCELED,
     REQUESTS_ERROR, REQUESTS_INFLIGHT, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT, RUNNING,
     TOKENS_INPUT, TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING, TURNS_TOTAL,
 };
@@ -40,6 +40,7 @@ struct MetricsSnapshot {
     errors_4xx: u64,
     errors_5xx: u64,
     errors_parse: u64,
+    errors_stream: u64,
     errors_other: u64,
 
     // Store previous histogram snapshots
@@ -74,6 +75,7 @@ impl MetricsSnapshot {
             errors_4xx: ERRORS_HTTP_4XX.value(),
             errors_5xx: ERRORS_HTTP_5XX.value(),
             errors_parse: ERRORS_PARSE.value(),
+            errors_stream: ERRORS_STREAM.value(),
             errors_other: ERRORS_OTHER.value(),
             tpot_histogram: Self::merge_tpot(),
             request_histogram: REQUEST_LATENCY.load(),
@@ -92,6 +94,7 @@ impl MetricsSnapshot {
         self.errors_4xx = ERRORS_HTTP_4XX.value();
         self.errors_5xx = ERRORS_HTTP_5XX.value();
         self.errors_parse = ERRORS_PARSE.value();
+        self.errors_stream = ERRORS_STREAM.value();
         self.errors_other = ERRORS_OTHER.value();
         self.tpot_histogram = Self::merge_tpot();
         self.request_histogram = REQUEST_LATENCY.load();
@@ -144,6 +147,7 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         let current_errors_4xx = ERRORS_HTTP_4XX.value();
         let current_errors_5xx = ERRORS_HTTP_5XX.value();
         let current_errors_parse = ERRORS_PARSE.value();
+        let current_errors_stream = ERRORS_STREAM.value();
         let current_errors_other = ERRORS_OTHER.value();
 
         // Calculate deltas for this window
@@ -160,6 +164,7 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
         let window_errors_4xx = current_errors_4xx - previous_snapshot.errors_4xx;
         let window_errors_5xx = current_errors_5xx - previous_snapshot.errors_5xx;
         let window_errors_parse = current_errors_parse - previous_snapshot.errors_parse;
+        let window_errors_stream = current_errors_stream - previous_snapshot.errors_stream;
         let window_errors_other = current_errors_other - previous_snapshot.errors_other;
 
         // Skip window 0 since no requests have been sent yet
@@ -228,14 +233,17 @@ pub async fn periodic_stats(config: Config, warmup_complete: Arc<Notify>) {
             let e4xx_rate = window_errors_4xx as f64 / interval_secs;
             let e5xx_rate = window_errors_5xx as f64 / interval_secs;
             let parse_rate = window_errors_parse as f64 / interval_secs;
+            let timeout_rate = window_requests_timeout as f64 / interval_secs;
+            let stream_rate = window_errors_stream as f64 / interval_secs;
             let other_rate = window_errors_other as f64 / interval_secs;
             output!(
-                "Errors/s: Connection: {:.2} 4xx: {:.2} 5xx: {:.2} Parse: {:.2} Timeout: {:.2} Other: {:.2}",
+                "Errors/s: Connection: {:.2} 4xx: {:.2} 5xx: {:.2} Parse: {:.2} Timeout: {:.2} Stream: {:.2} Other: {:.2}",
                 conn_rate,
                 e4xx_rate,
                 e5xx_rate,
                 parse_rate,
                 timeout_rate,
+                stream_rate,
                 other_rate
             );
         }
