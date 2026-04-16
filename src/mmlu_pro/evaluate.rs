@@ -436,6 +436,7 @@ pub async fn run_evaluation(
                                 Box::leak(format!("http {status}").into_boxed_str())
                             }
                             Some(ClientError::Parse(_)) => "parse",
+                            Some(ClientError::StreamError { .. }) => "stream",
                             Some(ClientError::Other(_)) | None => "unknown",
                         };
                         eprintln!(

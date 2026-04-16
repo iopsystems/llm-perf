@@ -1133,12 +1133,23 @@ impl BenchmarkRunner {
                     // Consume stream, collect response content for conversation history
                     let mut response_content = String::new();
 
-                    while let Some(chunk) = stream.next_chunk().await? {
-                        for choice in chunk.choices {
-                            if let Some(content) = choice.delta.content {
-                                response_content.push_str(&content);
+                    loop {
+                        match stream.next_chunk().await {
+                            Ok(Some(chunk)) => {
+                                for choice in chunk.choices {
+                                    if let Some(content) = choice.delta.content {
+                                        response_content.push_str(&content);
+                                    }
+                                    // Reasoning tokens don't go into conversation history
+                                }
                             }
-                            // Reasoning tokens don't go into conversation history
+                            Ok(None) => break, // Stream ended normally
+                            Err(e) => {
+                                Metrics::record_request_complete(RequestStatus::Failed(
+                                    ErrorType::Stream,
+                                ));
+                                return Err(e);
+                            }
                         }
                     }
 
@@ -1224,6 +1235,7 @@ impl BenchmarkRunner {
                                 ClientError::Http5xx { status, .. } => ErrorType::Http5xx(*status),
                                 ClientError::Parse(_) => ErrorType::Parse,
                                 ClientError::Timeout(_) => ErrorType::Timeout,
+                                ClientError::StreamError { .. } => ErrorType::Stream,
                                 ClientError::Other(_) => ErrorType::Other,
                             }
                         } else if e.to_string().contains("timeout") {
@@ -1280,13 +1292,24 @@ impl BenchmarkRunner {
                 // Consume the stream to measure TTFT and total time
                 let mut total_content = String::new();
 
-                while let Some(chunk) = stream.next_chunk().await? {
-                    for choice in chunk.choices {
-                        if let Some(content) = choice.delta.content {
-                            total_content.push_str(&content);
+                loop {
+                    match stream.next_chunk().await {
+                        Ok(Some(chunk)) => {
+                            for choice in chunk.choices {
+                                if let Some(content) = choice.delta.content {
+                                    total_content.push_str(&content);
+                                }
+                                if let Some(reasoning) = choice.delta.reasoning_content {
+                                    total_content.push_str(&reasoning);
+                                }
+                            }
                         }
-                        if let Some(reasoning) = choice.delta.reasoning_content {
-                            total_content.push_str(&reasoning);
+                        Ok(None) => break, // Stream ended normally
+                        Err(e) => {
+                            Metrics::record_request_complete(RequestStatus::Failed(
+                                ErrorType::Stream,
+                            ));
+                            return Err(e);
                         }
                     }
                 }
@@ -1386,6 +1409,7 @@ impl BenchmarkRunner {
                             ClientError::Http5xx { status, .. } => ErrorType::Http5xx(*status),
                             ClientError::Parse(_) => ErrorType::Parse,
                             ClientError::Timeout(_) => ErrorType::Timeout,
+                            ClientError::StreamError { .. } => ErrorType::Stream,
                             ClientError::Other(_) => ErrorType::Other,
                         }
                     } else if e.to_string().contains("timeout") {

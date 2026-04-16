@@ -22,6 +22,9 @@ pub enum ClientError {
     #[error("Timeout after {0:?}")]
     Timeout(Duration),
 
+    #[error("type: {error_type}, message: {message}")]
+    StreamError { error_type: String, message: String },
+
     #[error("Other error: {0}")]
     Other(String),
 }
@@ -111,6 +114,19 @@ pub struct ChatCompletionChunk {
     /// Server-reported token usage (present in final chunk when stream_options.include_usage is set)
     #[serde(default)]
     pub usage: Option<Usage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StreamError {
+    message: String,
+    #[serde(rename = "type")]
+    error_type: String,
+}
+
+// Error response in streaming mode
+#[derive(Debug, Clone, Deserialize)]
+struct StreamErrorResponse {
+    error: StreamError,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -534,7 +550,8 @@ impl OpenAIClient {
                 ClientError::Http5xx { .. } => true,  // Server errors
                 ClientError::Http4xx { .. } => false, // Client errors (don't retry)
                 ClientError::Parse(_) => false,       // Parse errors (don't retry)
-                ClientError::Other(_) => false,       // Unknown errors (don't retry)
+                ClientError::StreamError { .. } => false,
+                ClientError::Other(_) => false, // Unknown errors (don't retry)
             }
         } else {
             // For non-ClientError types, check the error message
@@ -635,6 +652,16 @@ impl StreamResponse {
                         break;
                     }
 
+                    // Try to parse as error response first
+                    if let Ok(error_resp) = serde_json::from_str::<StreamErrorResponse>(json_str) {
+                        return Err(ClientError::StreamError {
+                            error_type: error_resp.error.error_type,
+                            message: error_resp.error.message,
+                        }
+                        .into());
+                    }
+
+                    // Try to parse as normal completion chunk
                     if let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(json_str) {
                         self.pending_chunks.push_back(chunk);
                     }

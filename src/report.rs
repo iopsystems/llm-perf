@@ -60,6 +60,7 @@ pub struct ErrorBreakdown {
     pub errors_connection: u64,
     pub errors_http_4xx: u64,
     pub errors_http_5xx: u64,
+    pub errors_stream: u64,
     pub errors_other: u64,
 }
 
@@ -209,9 +210,9 @@ impl ReportBuilder {
         };
 
         use crate::metrics::{
-            ERRORS_CONNECTION, ERRORS_HTTP_4XX, ERRORS_HTTP_5XX, ERRORS_OTHER, REQUESTS_CANCELED,
-            REQUESTS_ERROR, REQUESTS_RETRIED, REQUESTS_SENT, REQUESTS_SUCCESS, REQUESTS_TIMEOUT,
-            TOKENS_INPUT, TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING,
+            ERRORS_CONNECTION, ERRORS_HTTP_4XX, ERRORS_HTTP_5XX, ERRORS_OTHER, ERRORS_STREAM,
+            REQUESTS_CANCELED, REQUESTS_ERROR, REQUESTS_RETRIED, REQUESTS_SENT, REQUESTS_SUCCESS,
+            REQUESTS_TIMEOUT, TOKENS_INPUT, TOKENS_OUTPUT_CONTENT, TOKENS_OUTPUT_REASONING,
         };
 
         let requests_sent = REQUESTS_SENT.value();
@@ -303,6 +304,7 @@ impl ReportBuilder {
             errors_connection: ERRORS_CONNECTION.value(),
             errors_http_4xx: ERRORS_HTTP_4XX.value(),
             errors_http_5xx: ERRORS_HTTP_5XX.value(),
+            errors_stream: ERRORS_STREAM.value(),
             errors_other: ERRORS_OTHER.value(),
         };
 
@@ -630,14 +632,16 @@ impl ReportBuilder {
         let total_errors = report.errors.errors_connection
             + report.errors.errors_http_4xx
             + report.errors.errors_http_5xx
+            + report.errors.errors_stream
             + report.errors.errors_other;
         if total_errors > 0 {
             println!(
-                "{} Errors: Connection: {} 4xx: {} 5xx: {} Other: {}",
+                "{} Errors: Connection: {} 4xx: {} 5xx: {} Stream: {} Other: {}",
                 timestamp,
                 report.errors.errors_connection,
                 report.errors.errors_http_4xx,
                 report.errors.errors_http_5xx,
+                report.errors.errors_stream,
                 report.errors.errors_other
             );
         }
