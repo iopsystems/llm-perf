@@ -354,8 +354,10 @@ impl BenchmarkRunner {
         };
 
         // Run benchmark (without generating report)
-        // If qps is set, use fixed QPS mode; otherwise use concurrent mode
-        let test_duration = if self.config.load.qps.is_some() {
+        let test_duration = if self.config.saturation.is_some() {
+            self.run_saturation_mode_internal(start_instant, warmup_complete)
+                .await?
+        } else if self.config.load.qps.is_some() {
             self.run_qps_mode_internal(start_instant, warmup_complete)
                 .await?
         } else {
@@ -643,6 +645,151 @@ impl BenchmarkRunner {
             info!("Warmup: {} requests (excluded from metrics)", warmup_total);
             info!("Main test: {} requests", completed.load(Ordering::Relaxed));
         }
+
+        Ok(test_duration)
+    }
+
+    async fn run_saturation_mode_internal(
+        &self,
+        start_instant: Instant,
+        warmup_complete: Arc<tokio::sync::Notify>,
+    ) -> Result<Duration> {
+        let sat_config = self.config.saturation.as_ref().unwrap().clone();
+        let start_concurrency = sat_config.start_concurrency;
+        let max_concurrency = sat_config.max_concurrency;
+
+        info!(
+            "Running saturation search: concurrency {}..{}, step {:.1}x",
+            start_concurrency, max_concurrency, sat_config.step_multiplier,
+        );
+
+        // Run warmup at start_concurrency using duration-based warmup if configured
+        let warmup_duration = self.config.load.warmup_duration.map(Duration::from_secs);
+        let warmup_semaphore = Arc::new(Semaphore::new(start_concurrency));
+
+        if let Some(warmup_dur) = warmup_duration {
+            info!(
+                "Starting warmup phase for {} seconds at concurrency {}",
+                warmup_dur.as_secs(),
+                start_concurrency
+            );
+            let warmup_deadline = Instant::now() + warmup_dur;
+            let mut warmup_handles = Vec::new();
+
+            for _worker_id in 0..start_concurrency {
+                let client = Arc::clone(&self.client);
+                let tokenizer = Arc::clone(&self.tokenizer);
+                let semaphore = Arc::clone(&warmup_semaphore);
+                let workloads = self.workloads.clone();
+                let prompt_index_clone = Arc::new(AtomicUsize::new(0));
+
+                let handle = tokio::spawn(async move {
+                    while Instant::now() < warmup_deadline {
+                        let _permit = match semaphore.try_acquire() {
+                            Ok(permit) => permit,
+                            Err(_) => break,
+                        };
+                        let idx = prompt_index_clone.fetch_add(1, Ordering::Relaxed);
+                        let workload = workloads[idx % workloads.len()].clone();
+                        let _ = Self::execute_workload(
+                            client.clone(),
+                            tokenizer.clone(),
+                            workload,
+                            idx,
+                            true,
+                        )
+                        .await;
+                    }
+                    Ok::<(), anyhow::Error>(())
+                });
+                warmup_handles.push(handle);
+            }
+
+            sleep(warmup_dur).await;
+            for handle in warmup_handles {
+                let _ = handle.await;
+            }
+            info!("Warmup complete, starting saturation search");
+        }
+
+        warmup_complete.notify_one();
+        let test_start = Instant::now();
+
+        // Create semaphore with start_concurrency permits
+        let semaphore = Arc::new(Semaphore::new(start_concurrency));
+        let mut sat_state =
+            crate::saturation::SaturationSearchState::new(sat_config, Arc::clone(&semaphore));
+        sat_state.initialize();
+
+        let should_stop = Arc::new(AtomicBool::new(false));
+        let prompt_index = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+
+        // Spawn max_concurrency workers — semaphore gates actual concurrency
+        for _worker_id in 0..max_concurrency {
+            let client = Arc::clone(&self.client);
+            let tokenizer = Arc::clone(&self.tokenizer);
+            let semaphore = Arc::clone(&semaphore);
+            let should_stop = Arc::clone(&should_stop);
+            let prompt_index = Arc::clone(&prompt_index);
+            let workloads = self.workloads.clone();
+
+            handles.push(tokio::spawn(async move {
+                loop {
+                    if should_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    let permit = semaphore.acquire().await;
+                    let _permit = match permit {
+                        Ok(p) => p,
+                        Err(_) => break, // semaphore closed
+                    };
+
+                    if should_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    let idx = prompt_index.fetch_add(1, Ordering::Relaxed);
+                    let workload = workloads[idx % workloads.len()].clone();
+                    let _ = Self::execute_workload(
+                        client.clone(),
+                        tokenizer.clone(),
+                        workload,
+                        idx,
+                        false,
+                    )
+                    .await;
+                }
+                Ok::<(), anyhow::Error>(())
+            }));
+        }
+
+        // Control loop — check saturation state periodically
+        loop {
+            sleep(Duration::from_secs(1)).await;
+            if sat_state.check_and_advance() && sat_state.is_completed() {
+                break;
+            }
+        }
+
+        should_stop.store(true, Ordering::Relaxed);
+        semaphore.close();
+
+        // Wait for workers with grace period
+        let grace_period = Duration::from_secs(30);
+        for handle in handles {
+            let _ = tokio::time::timeout(grace_period, handle).await;
+        }
+
+        let test_duration = test_start.elapsed();
+        let total_duration = start_instant.elapsed();
+
+        info!(
+            "Saturation search completed in {:.1}s total ({:.1}s test)",
+            total_duration.as_secs_f64(),
+            test_duration.as_secs_f64()
+        );
 
         Ok(test_duration)
     }

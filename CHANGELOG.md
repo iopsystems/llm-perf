@@ -4,15 +4,34 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-04-15
+
+### Features
+
+- Add saturation search to find max compliant concurrency (#42)
+- Add reasoning model support with phase-aware metrics (#33)
+- Split TTFT into separate metrics and add phase-aware token counting (#34)
+- Add multi-turn conversation support and dataset auto-download (#36)
+- Add configurable shots, penalties, and OpenCompass-style eval for MMLU-Pro (#38, #39)
+- Add overall progress tracking across categories for MMLU-Pro (#44)
+
+### Bug Fixes
+
+- Measure throughput with successful requests only (#43)
+- Add error tracking, retries, and progress improvements to MMLU-Pro (#40)
+- Upgrade metriken-exposition to 0.13 for PromQL-compatible snapshots (#32)
+
 ### Changes
 
-- Rename project from llm-bench to llm-perf
+- Rename project from llm-bench to llm-perf (#27)
+- Convert mmlu-pro from separate binary to subcommand (#29)
+- Refactor request status tracking to distinguish errors, timeouts, and cancellations (#41)
+- Align mmlu-pro config with benchmark conventions (#37)
+- Replace ringlog with tracing-appender for non-blocking logging (#35)
+- Add canonical formatter for unique parquet column names (#30)
 - Upgrade reqwest from 0.11 to 0.12, removing duplicate dependency and unmaintained rustls-pemfile
 - Update quinn-proto to 0.11.14 to fix RUSTSEC-2026-0037
-- Remove dead snapshotter code from stats module
-- Fix basic.toml scenario missing /v1 path in base_url
-- Update README to match actual output format and document logprobs/kl-divergence subcommands
-- Update CLAUDE.md project structure to reflect current codebase
+- Housekeeping cleanup — docs, dead code, and bug fixes (#28)
 
 ## [0.1.9] - 2026-03-03
 

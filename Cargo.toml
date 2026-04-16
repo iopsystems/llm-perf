@@ -1,6 +1,6 @@
 [package]
 name = "llm-perf"
-version = "0.1.10-alpha.0"
+version = "0.1.11-alpha.0"
 edition = "2024"
 authors = ["Brian Martin <brayniac@gmail.com>"]
 description = "A benchmarking tool for OpenAI-compatible LLM servers"
@@ -17,10 +17,11 @@ clap = { version = "4.4", features = ["derive"] }
 arrow = { version = "56", default-features = false, features = ["prettyprint"] }
 futures = "0.3"
 hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls"] }
+histogram = "1.1"
 humantime = "2.1"
 log = "0.4"
-metriken = "0.7"
-metriken-exposition = { version = "0.13.1", features = ["json", "msgpack"] }
+metriken = { git = "https://github.com/iopsystems/metriken" }
+metriken-exposition = { git = "https://github.com/iopsystems/metriken", features = ["json", "msgpack"] }
 num_cpus = "1.16"
 parquet = { version = "56", default-features = false, features = ["arrow"] }
 rand = "0.8"
