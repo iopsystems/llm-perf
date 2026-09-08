@@ -2,6 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [0.1.17] - 2026-09-08
+
+### Features
+
+- Capture server-side metrics by shelling out to `rezolus record` (#159)
+- Configurable saturation tuning knobs; deprecate `stop_after_failures` (#151)
+- Flag chunk-granular ITL when the server batches tokens (#150)
+- Real per-model tokenizer for prompt sizing (#149)
+- QPS overload cap — shed instead of unbounded queueing (#148)
+- Saturation bisect + drain search, marginal-gain plateau, transition flags (#145)
+- Configurable stream idle timeout; opt-in, deadline-aware retries (#143)
+- New workload model — shared prefix, cache-hit targeting, outcome metrics (#130)
+- Synthetic multi-turn conversations (#112)
+- Common prefix support for testing vLLM prefix caching (#83)
+- Synthetic data generation support (#79)
+- Allow `max_tokens` to be specified in the config file (#77)
+- Add `ignore_eos` option (#161)
+- Add `nothink` option (#120)
+
+### Bug Fixes
+
+- llama.cpp `/tokenize` response shape; retry on connection errors (#161)
+- QPS schedule drift, handle reaping, stats window drift, sampling bias (#146)
+- Byte-level SSE buffering; surface malformed chunks (#144)
+- Prefer server token counts; flag non-OpenAI tokenizer as estimate (#142)
+- Measure QPS latency from arrival, add schedule-slip metric (#141)
+- Correctness fixes for metrics, extraction, timeouts, resume (#140)
+- Warmup mutual-exclusion validation, `turn_prompt_tokens` ceiling, doc fixes (#126)
+- Correct system prompt injection, cache busting, and single-turn system prompts (#125)
+- Cache busting flag rename (#120)
+- Include reasoning tokens in multi-turn conversation history (#115)
+- Use a unique prefix when `common_prefix_tokens` is 0 (#85)
+- Balance `requests_inflight` via RAII guard (#80)
+- Cancel in-flight warmup requests at deadline expiry (#78)
+
+### Changes
+
+- Concurrent fixed-count mode reimplemented as a worker pool (#147)
+- Remove `calc/` — extracted to iopsystems/llm-calc (#158)
+
+### Security
+
+- Clear cargo audit advisories (#162)
+- Bump quinn-proto 0.11.14 -> 0.11.15 (RUSTSEC-2026-0185) (#155)
+
+
 ## [0.1.16] - 2026-05-01
 
 ### Features
