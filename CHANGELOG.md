@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Infrastructure
 
 - Drop Debian 11 (bullseye) from the release matrix — EOL 2026-08-31
+- Update GitHub Actions to their Node 24 majors — checkout v7, upload-artifact v7, download-artifact v7, action-gh-release v3
 
 ## [0.1.17] - 2026-09-08
 
