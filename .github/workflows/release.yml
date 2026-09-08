@@ -34,7 +34,7 @@ jobs:
     env:
       DEB_BUILD_OPTS: nocheck
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: run packaging script
         run: |
@@ -48,7 +48,7 @@ jobs:
             --chown "$(id -u)"                  \
             --verbose
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           path: target/debian/*
           name: deb_${{ matrix.distro }}_${{ matrix.release }}_${{ matrix.arch }}
@@ -72,7 +72,7 @@ jobs:
         run: |
           yum install -y tar gzip
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: install rust
         run: |
@@ -171,7 +171,7 @@ jobs:
             rpm -qp --qf "  VERSION: %{VERSION}\n  RELEASE: %{RELEASE}\n  ARCHIVESIZE: %{ARCHIVESIZE}\n" "$rpm"
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           path: target/generate-rpm/*
           name: rpm_${{ matrix.distro }}_${{ matrix.version }}_${{ matrix.arch }}
@@ -181,17 +181,17 @@ jobs:
     needs: [build-deb, build-rpm]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download .deb artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: debs/
           pattern: deb_*
           merge-multiple: true
 
       - name: Download .rpm artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: rpms/
           pattern: rpm_*
@@ -205,7 +205,7 @@ jobs:
           ls -la rpms/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             debs/*.deb
