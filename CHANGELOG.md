@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Infrastructure
+
+- Drop Debian 11 (bullseye) from the release matrix — EOL 2026-08-31
+
 ## [0.1.17] - 2026-09-08
 
 ### Features
