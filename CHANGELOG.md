@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - Drop Debian 11 (bullseye) from the release matrix — EOL 2026-08-31
 - Update GitHub Actions to their Node 24 majors — checkout v7, upload-artifact v7, download-artifact v7, action-gh-release v3
+- Fix the automated dev-version bump corrupting `Cargo.lock` — it rewrote the first `[[package]]` entry instead of `llm-perf`; repair the current lock
 
 ## [0.1.17] - 2026-09-08
 

@@ -22,6 +22,8 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN }}
 
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
@@ -67,8 +69,11 @@ jobs:
           git checkout -b "$BRANCH"
 
           sed -i "0,/^version = \".*\"/s//version = \"${NEXT_DEV}\"/" Cargo.toml
-          # Update Cargo.lock to match
-          sed -i "0,/^version = \".*\"/s//version = \"${NEXT_DEV}\"/" Cargo.lock
+          # Let cargo update Cargo.lock. A sed here would rewrite the first
+          # [[package]] block (Cargo.lock opens with an unquoted `version = 4`,
+          # so the first quoted match is the alphabetically-first dependency)
+          # rather than the llm-perf entry.
+          cargo update -p llm-perf
 
           git add Cargo.toml Cargo.lock
           git commit -m "chore: bump to ${NEXT_DEV} for next development iteration"
