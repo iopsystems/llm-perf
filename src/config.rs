@@ -106,6 +106,17 @@ pub struct EndpointConfig {
     /// For example, set `{enable_thinking = false}` to disable thinking mode on Qwen3.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_template_kwargs: Option<serde_json::Value>,
+    /// Suppress the end-of-sequence token so generation always runs to
+    /// `max_tokens`. Makes token-generation throughput comparable across models
+    /// and quants, which otherwise stop at different natural lengths and blend
+    /// TTFT into `output_tokens_per_second`.
+    ///
+    /// Supported by llama.cpp (as a logit bias over the EOG tokens) and vLLM.
+    /// Servers that ignore unknown fields accept it silently and keep stopping
+    /// early, so the run warns if generation came up short — see
+    /// `warn_if_eos_not_ignored`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignore_eos: Option<bool>,
     /// Exact tokenizer for prompt sizing: a local `tokenizer.json` path OR a
     /// HuggingFace model id (downloaded/cached). When unset, the tool calibrates a
     /// tiktoken estimate against the server's `/tokenize` if available, else uses a

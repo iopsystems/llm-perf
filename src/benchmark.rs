@@ -227,13 +227,41 @@ async fn calibrate_tokenizer(client: &OpenAIClient, model: &str) -> Option<f64> 
         real_total += real;
         tiktoken_total += tiktoken.count_tokens(s);
     }
-    if tiktoken_total == 0 {
+    // A zero real count means the server accepted the request but tokenized
+    // nothing (a `/tokenize` schema mismatch), not that the text is empty.
+    // Calibrating on it would yield a ratio of 0 and generate empty prompts, so
+    // fall through to the tiktoken estimate instead.
+    if tiktoken_total == 0 || real_total == 0 {
         return None;
     }
     Some(crate::tokenizer::calibration_ratio(
         real_total,
         tiktoken_total,
     ))
+}
+
+/// Warn when `ignore_eos` was requested but the server kept stopping early.
+///
+/// Servers that ignore unknown request fields (ferallm flattens them into a
+/// catch-all map) accept `ignore_eos` with a 200 and stop at EOS anyway. The
+/// run then looks fine while generation lengths still vary per model, which is
+/// exactly what `ignore_eos` was set to prevent — so say so rather than let the
+/// numbers quietly mean something else.
+fn warn_if_eos_not_ignored(report: &crate::report::BenchmarkReport, max_tokens: Option<u32>) {
+    let (Some(max_tokens), true) = (max_tokens, report.summary.requests_successful > 0) else {
+        return;
+    };
+    let mean_out =
+        report.throughput.total_output_tokens as f64 / report.summary.requests_successful as f64;
+    // Allow a little slack: the last token may be trimmed, and a stop string can
+    // legitimately fire. Only a clear shortfall indicates the flag did nothing.
+    if mean_out < max_tokens as f64 * 0.95 {
+        warn!(
+            "ignore_eos was requested but generation averaged {mean_out:.0} of {max_tokens} \
+             tokens — the server appears to ignore it. Generation lengths still vary, so \
+             output_tokens_per_second is not comparable across models; compare TPOT instead."
+        );
+    }
 }
 
 /// Maximum outstanding (in-flight + queued) requests for QPS mode. When not set,
@@ -361,6 +389,7 @@ impl BenchmarkRunner {
                 .then(|| Duration::from_secs(config.endpoint.stream_idle_timeout)),
             retry_on_timeout: config.endpoint.retry_on_timeout,
             chat_template_kwargs: config.endpoint.chat_template_kwargs.clone(),
+            ignore_eos: config.endpoint.ignore_eos,
         })?;
 
         // Resolve the best available tokenizer for prompt sizing.
@@ -2415,6 +2444,10 @@ impl BenchmarkRunner {
             report.throughput.total_output_tokens,
             report.throughput.total_input_tokens + report.throughput.total_output_tokens
         );
+
+        if self.config.endpoint.ignore_eos == Some(true) {
+            warn_if_eos_not_ignored(report, self.config.endpoint.max_tokens);
+        }
 
         println!(
             "{} Throughput: Requests/s: {:.2} Input tokens/s: {:.2} Output tokens/s: {:.2}",

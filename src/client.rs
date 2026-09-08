@@ -47,6 +47,7 @@ pub struct OpenAIClient {
     /// a possibly-still-running, non-idempotent generation).
     retry_on_timeout: bool,
     chat_template_kwargs: Option<serde_json::Value>,
+    ignore_eos: Option<bool>,
 }
 
 // Request types for OpenAI Chat Completions API
@@ -76,6 +77,9 @@ pub struct ChatCompletionRequest {
     pub top_logprobs: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_template_kwargs: Option<serde_json::Value>,
+    /// Suppress EOS so generation runs to `max_tokens` (llama.cpp / vLLM).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignore_eos: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -238,6 +242,8 @@ pub struct ClientConfig {
     pub retry_on_timeout: bool,
     /// Additional kwargs forwarded to the model's chat template for every request.
     pub chat_template_kwargs: Option<serde_json::Value>,
+    /// Suppress EOS so generation runs to `max_tokens` (llama.cpp / vLLM).
+    pub ignore_eos: Option<bool>,
 }
 
 impl OpenAIClient {
@@ -269,6 +275,7 @@ impl OpenAIClient {
     ///     stream_idle_timeout: None,
     ///     retry_on_timeout: false,
     ///     chat_template_kwargs: None,
+    ///     ignore_eos: None,
     /// };
     ///
     /// let client = OpenAIClient::new(config).unwrap();
@@ -296,6 +303,7 @@ impl OpenAIClient {
             stream_idle_timeout: config.stream_idle_timeout,
             retry_on_timeout: config.retry_on_timeout,
             chat_template_kwargs: config.chat_template_kwargs,
+            ignore_eos: config.ignore_eos,
         })
     }
 
@@ -367,12 +375,7 @@ impl OpenAIClient {
                 } else if e.is_timeout() {
                     return Err(ClientError::Timeout(self.timeout).into());
                 } else if e.is_request() {
-                    let err_msg = e.to_string();
-                    if err_msg.contains("connection closed")
-                        || err_msg.contains("connection reset")
-                        || err_msg.contains("broken pipe")
-                        || err_msg.contains("connection refused")
-                    {
+                    if is_connection_cause(&e) {
                         return Err(ClientError::Connection(format!("Request error: {}", e)).into());
                     } else {
                         return Err(ClientError::Other(format!("Request error: {}", e)).into());
@@ -435,8 +438,13 @@ impl OpenAIClient {
         let root = self.base_url.trim_end_matches('/');
         let root = root.strip_suffix("/v1").unwrap_or(root);
         let url = format!("{root}/tokenize");
+        // `content` is llama.cpp's field; `prompt` is vLLM/TGI's. Send both so a
+        // single request works against either — llama.cpp ignores a body without
+        // `content` and returns an empty token array with HTTP 200, which would
+        // otherwise calibrate to a ratio of zero and yield empty prompts.
         let mut req = self.client.post(&url).json(&serde_json::json!({
             "model": self.model,
+            "content": text,
             "prompt": text,
         }));
         if let Some(api_key) = &self.api_key {
@@ -477,6 +485,7 @@ impl OpenAIClient {
             logprobs,
             top_logprobs,
             chat_template_kwargs: self.chat_template_kwargs.clone(),
+            ignore_eos: self.ignore_eos,
         }
     }
 
@@ -565,13 +574,7 @@ impl OpenAIClient {
                 } else if e.is_timeout() {
                     return Err(ClientError::Timeout(self.timeout).into());
                 } else if e.is_request() {
-                    // Check if this is a connection-related request error
-                    let err_msg = e.to_string();
-                    if err_msg.contains("connection closed")
-                        || err_msg.contains("connection reset")
-                        || err_msg.contains("broken pipe")
-                        || err_msg.contains("connection refused")
-                    {
+                    if is_connection_cause(&e) {
                         return Err(ClientError::Connection(format!("Request error: {}", e)).into());
                     } else {
                         return Err(ClientError::Other(format!("Request error: {}", e)).into());
@@ -648,6 +651,37 @@ impl OpenAIClient {
 
         Duration::from_millis(jittered_delay_ms)
     }
+}
+
+/// Whether a `reqwest` request error was caused by the connection dying rather
+/// than by the request itself.
+///
+/// `reqwest`'s own `Display` is generic ("error sending request for url (...)"),
+/// so matching on it alone misses every real cause -- those live in the source
+/// chain ("connection closed before message completed"). A pooled keep-alive
+/// connection that the server has already closed surfaces exactly this way, and
+/// is safe to retry: the request never reached the server, so no generation was
+/// started and no work is duplicated.
+fn is_connection_cause(e: &reqwest::Error) -> bool {
+    let mut chain = e.to_string();
+    let mut src: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(inner) = src {
+        chain.push_str("; ");
+        chain.push_str(&inner.to_string());
+        src = inner.source();
+    }
+    let chain = chain.to_lowercase();
+    [
+        "connection closed",
+        "connection reset",
+        "connection refused",
+        "connection aborted",
+        "broken pipe",
+        "unexpected eof",
+        "channel closed",
+    ]
+    .iter()
+    .any(|needle| chain.contains(needle))
 }
 
 /// Classify whether an error should be retried.
@@ -1356,9 +1390,43 @@ mod tests {
             stream_idle_timeout: None,
             retry_on_timeout: false,
             chat_template_kwargs: None,
+            ignore_eos: None,
         };
         let client = OpenAIClient::new(config).unwrap();
         assert_eq!(client.timeout, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn ignore_eos_is_serialized_only_when_set() {
+        // llama.cpp gates on the key's presence, so it must appear on the wire
+        // when configured -- and must stay absent otherwise, so servers that
+        // reject unknown fields are unaffected when the option is not used.
+        let mk = |ignore_eos| {
+            let config = ClientConfig {
+                base_url: "http://localhost:1".to_string(),
+                api_key: None,
+                model: "test".to_string(),
+                timeout: Duration::from_secs(1),
+                max_retries: 0,
+                retry_initial_delay_ms: 1,
+                retry_max_delay_ms: 1,
+                pool_size: 1,
+                stream_idle_timeout: None,
+                retry_on_timeout: false,
+                chat_template_kwargs: None,
+                ignore_eos,
+            };
+            let client = OpenAIClient::new(config).unwrap();
+            let req = client.create_request("hi", Some(8), None, None);
+            serde_json::to_string(&req).unwrap()
+        };
+
+        let body = mk(Some(true));
+        assert!(
+            body.contains("\"ignore_eos\":true"),
+            "ignore_eos missing from wire body: {body}"
+        );
+        assert!(!mk(None).contains("ignore_eos"));
     }
 
     #[test]
