@@ -20,7 +20,6 @@ jobs:
       matrix:
         include:
           # debian
-          - { distro: debian, release: bullseye, arch: x86_64 }
           - { distro: debian, release: bookworm, arch: x86_64 }
           - { distro: debian, release: bookworm, arch: arm64 }
           - { distro: debian, release: trixie, arch: x86_64 }
