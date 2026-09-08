@@ -264,6 +264,42 @@ fn warn_if_eos_not_ignored(report: &crate::report::BenchmarkReport, max_tokens: 
     }
 }
 
+/// The longest one request can legitimately take.
+///
+/// The client deadlines each attempt at `endpoint.timeout` and retries up to
+/// `max_retries` times (see `client.rs`), so this is the real per-request
+/// ceiling -- using `timeout` alone understates it by a factor of
+/// `max_retries + 1`.
+fn request_ceiling(endpoint_timeout_secs: u64, max_retries: u32) -> Duration {
+    Duration::from_secs(endpoint_timeout_secs.saturating_mul(u64::from(max_retries) + 1))
+}
+
+/// Safety net for the post-loop wait. This bounds a WEDGED client, not the test.
+///
+/// `outstanding_per_worker` is how many requests one task may still run: 1 where
+/// each task is a single request (QPS), or where the workers have already been
+/// signalled to stop and only need to finish the request in hand (duration,
+/// saturation); `ceil(total / concurrency)` for the closed-loop pool that runs a
+/// whole request-count test in one task.
+///
+/// A flat constant here silently truncated legitimate runs and published the
+/// partial result as though it were complete: 12 requests at ~8.2s each came
+/// back as `Sent: 7` with a suspiciously round `60.0s`, which in turn collapsed
+/// throughput onto `n * max_tokens / 60`. Deriving the net from what the work
+/// can actually take means it only fires on a genuine bug -- and when it does,
+/// callers warn rather than swallow it.
+fn teardown_grace(
+    outstanding_per_worker: usize,
+    endpoint_timeout_secs: u64,
+    max_retries: u32,
+) -> Duration {
+    const SLACK: Duration = Duration::from_secs(60);
+    let per_worker = u32::try_from(outstanding_per_worker.max(1)).unwrap_or(u32::MAX);
+    request_ceiling(endpoint_timeout_secs, max_retries)
+        .saturating_mul(per_worker)
+        .saturating_add(SLACK)
+}
+
 /// Maximum outstanding (in-flight + queued) requests for QPS mode. When not set,
 /// a generous default that effectively never trips in a healthy run but bounds
 /// runaway accumulation under sustained overload: `max(concurrency * 100, 100k)`.
@@ -1144,15 +1180,41 @@ impl BenchmarkRunner {
             should_stop.store(true, Ordering::Relaxed);
         }
 
-        // Wait for all tasks to complete with a grace period
-        let grace_period = Duration::from_secs(60);
+        // Wait for all tasks to complete with a grace period.
+        //
+        // In request-count mode the workers are a closed-loop pool: each worker
+        // pulls from `prompt_index` until `total_requests` is exhausted, so ONE
+        // worker may legitimately run for `total_requests * endpoint.timeout`.
+        // A fixed grace here silently drops that worker mid-run and truncates
+        // the test -- `total_requests` quietly stops meaning what it says as
+        // soon as generation is slow enough. (Observed: 12 requests at ~8.2s
+        // each reported `Sent: 7` and a suspiciously round `60.0s` duration.)
+        //
+        // Every request is already bounded by `endpoint.timeout`, so bound the
+        // wait by the work that can actually be outstanding instead of a
+        // constant. Duration mode keeps the flat grace: there the workers have
+        // already been told to stop, so this only covers teardown.
+        // Request-count mode runs the whole test inside the worker pool, so the
+        // net must cover every request a worker may still have. Duration mode has
+        // already signalled stop, so one in-flight request is all that remains.
+        let per_worker = total_requests
+            .map(|t| t.div_ceil(self.config.load.concurrent_requests.max(1)))
+            .unwrap_or(1);
+        let grace_period = teardown_grace(
+            per_worker,
+            self.config.endpoint.timeout,
+            self.config.endpoint.max_retries,
+        );
         for handle in handles {
             match tokio::time::timeout(grace_period, handle).await {
                 Ok(result) => {
                     let _ = result?;
                 }
                 Err(_) => {
-                    debug!("Worker task did not complete within grace period");
+                    warn!(
+                        "a worker did not finish within {grace_period:?} and was abandoned; \
+                         results are INCOMPLETE and throughput is understated"
+                    );
                 }
             }
         }
@@ -1404,10 +1466,19 @@ impl BenchmarkRunner {
         should_stop.store(true, Ordering::Relaxed);
         semaphore.close();
 
-        // Wait for workers with grace period
-        let grace_period = Duration::from_secs(30);
+        // Workers were signalled to stop, so only the in-flight request remains.
+        let grace_period = teardown_grace(
+            1,
+            self.config.endpoint.timeout,
+            self.config.endpoint.max_retries,
+        );
         for handle in handles {
-            let _ = tokio::time::timeout(grace_period, handle).await;
+            if tokio::time::timeout(grace_period, handle).await.is_err() {
+                warn!(
+                    "a worker did not finish within {grace_period:?} and was abandoned; \
+                     results are INCOMPLETE"
+                );
+            }
         }
 
         let test_duration = test_start.elapsed();
@@ -1810,15 +1881,22 @@ impl BenchmarkRunner {
             }
         }
 
-        // Wait for all requests to complete with a grace period
-        let grace_period = Duration::from_secs(60);
+        // One handle is one request here, so the net is a single request ceiling.
+        let grace_period = teardown_grace(
+            1,
+            self.config.endpoint.timeout,
+            self.config.endpoint.max_retries,
+        );
         for handle in handles {
             match timeout(grace_period, handle).await {
                 Ok(result) => {
                     let _ = result?;
                 }
                 Err(_) => {
-                    debug!("Request did not complete within grace period");
+                    warn!(
+                        "a request did not finish within {grace_period:?} and was abandoned; \
+                         results are INCOMPLETE and throughput is understated"
+                    );
                 }
             }
         }
@@ -2526,6 +2604,37 @@ mod tests {
         // (it can't fill the pipe) and would starve `total_requests` termination.
         assert_eq!(effective_outstanding_cap(Some(10), 50), 50);
         assert_eq!(effective_outstanding_cap(Some(0), 50), 50);
+    }
+
+    #[test]
+    fn teardown_grace_covers_what_the_work_can_take() {
+        // Regression: a flat 60s grace bounded the WHOLE closed-loop worker, so a
+        // run needing longer was truncated and published as complete -- 12
+        // requests at ~8.2s each reported `Sent: 7` and a round `60.0s`.
+
+        // The ceiling must account for retries: the client deadlines each attempt
+        // at `timeout` and retries `max_retries` times. Using `timeout` alone
+        // understates it by (max_retries + 1) and reintroduces the bug.
+        assert_eq!(request_ceiling(300, 3), Duration::from_secs(1200));
+        assert_eq!(request_ceiling(300, 0), Duration::from_secs(300));
+
+        // Closed-loop pool: one worker may run every request, so the net must
+        // cover all of them, not one.
+        let whole_run = teardown_grace(12, 300, 3);
+        assert_eq!(whole_run, Duration::from_secs(1200 * 12 + 60));
+        assert!(
+            whole_run > Duration::from_secs(98),
+            "must comfortably exceed the ~98s such a run actually needs"
+        );
+
+        // Teardown-only sites (one in-flight request) still get a real ceiling
+        // rather than a constant that could cut a slow generation short.
+        assert_eq!(teardown_grace(1, 300, 3), Duration::from_secs(1200 + 60));
+        assert!(teardown_grace(1, 300, 0) > Duration::from_secs(60));
+
+        // Zero/absurd worker counts must not collapse or overflow the net.
+        assert_eq!(teardown_grace(0, 300, 3), teardown_grace(1, 300, 3));
+        assert!(teardown_grace(usize::MAX, u64::MAX, u32::MAX) > Duration::from_secs(60));
     }
 
     #[test]
