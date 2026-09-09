@@ -264,6 +264,36 @@ fn warn_if_eos_not_ignored(report: &crate::report::BenchmarkReport, max_tokens: 
     }
 }
 
+/// Latest point at which a *counted* request finished, as micros since the test
+/// start. Zero means nothing completed.
+type LastCompletionUs = Arc<AtomicU64>;
+
+/// Record that a counted request finished, for the throughput window.
+fn mark_completion(last: &LastCompletionUs, test_start: Instant) {
+    let us = u64::try_from(test_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    last.fetch_max(us, Ordering::Relaxed);
+}
+
+/// The window throughput should be divided by: the span from the test start to
+/// the last counted completion.
+///
+/// Throughput divides completed work by a window, so both sides have to describe
+/// the same interval. Dividing by the nominal wall clock instead charges the run
+/// for time whose output was discarded -- a 300s bound that stops mid-request has
+/// ~270s of counted work, and a truncated request-count run has less still. That
+/// mismatch makes throughput quantise onto `n * max_tokens / window` for integer
+/// n instead of converging on a rate: a 27B quant matrix published
+/// 11, 11, 11, 13, 11, 17 tok/s across six quants whose real speeds differed.
+///
+/// Falls back to the elapsed wall clock when nothing completed, so a zero-result
+/// run still reports a sane duration rather than zero.
+fn throughput_window(last: &LastCompletionUs, elapsed: Duration) -> Duration {
+    match last.load(Ordering::Relaxed) {
+        0 => elapsed,
+        us => Duration::from_micros(us),
+    }
+}
+
 /// The longest one request can legitimately take.
 ///
 /// The client deadlines each attempt at `endpoint.timeout` and retries up to
@@ -833,6 +863,7 @@ impl BenchmarkRunner {
         }
 
         let completed = Arc::new(AtomicUsize::new(0));
+        let last_completion: LastCompletionUs = Arc::new(AtomicU64::new(0));
         let should_stop = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::new();
         let prompt_index = Arc::new(AtomicUsize::new(0));
@@ -929,6 +960,7 @@ impl BenchmarkRunner {
                 let client = Arc::clone(&self.client);
                 let tokenizer = Arc::clone(&self.tokenizer);
                 let completed = Arc::clone(&completed);
+                let last_completion = Arc::clone(&last_completion);
                 let prompt_index = Arc::clone(&prompt_index);
                 let workloads = Arc::clone(&self.workloads);
                 let system_prompt = Arc::clone(&self.system_prompt);
@@ -979,6 +1011,7 @@ impl BenchmarkRunner {
                         )
                         .await;
                         completed.fetch_add(1, Ordering::Relaxed);
+                        mark_completion(&last_completion, test_start);
                     }
                     Ok::<(), anyhow::Error>(())
                 }));
@@ -1084,6 +1117,7 @@ impl BenchmarkRunner {
                 let tokenizer = Arc::clone(&self.tokenizer);
                 let semaphore = Arc::clone(&semaphore);
                 let completed = Arc::clone(&completed);
+                let last_completion = Arc::clone(&last_completion);
                 let should_stop = Arc::clone(&should_stop);
                 let prompt_index = Arc::clone(&prompt_index);
                 let workloads = Arc::clone(&self.workloads);
@@ -1162,6 +1196,7 @@ impl BenchmarkRunner {
                             Ok(_) => {
                                 // Request completed normally
                                 completed.fetch_add(1, Ordering::Relaxed);
+                                mark_completion(&last_completion, test_start);
                             }
                             Err(_) => {
                                 // Future is dropped on timeout — InflightGuard's
@@ -1236,7 +1271,9 @@ impl BenchmarkRunner {
             info!("Main test: {} requests", completed.load(Ordering::Relaxed));
         }
 
-        Ok(test_duration)
+        // Divide completed work by the interval it actually occupied rather than
+        // the nominal window -- see `throughput_window`.
+        Ok(throughput_window(&last_completion, test_duration))
     }
 
     async fn run_saturation_mode_internal(
@@ -1545,6 +1582,7 @@ impl BenchmarkRunner {
         };
 
         let completed = Arc::new(AtomicUsize::new(0));
+        let last_completion: LastCompletionUs = Arc::new(AtomicU64::new(0));
         let mut handles = Vec::new();
         let prompt_index = Arc::new(AtomicUsize::new(0));
         let warmup_completed = Arc::new(AtomicUsize::new(0));
@@ -1787,6 +1825,7 @@ impl BenchmarkRunner {
             let tokenizer = Arc::clone(&self.tokenizer);
             let semaphore = Arc::clone(&semaphore);
             let completed = Arc::clone(&completed);
+            let last_completion = Arc::clone(&last_completion);
             let request_timeout = remaining;
             let system_prompt_for_closure = Arc::clone(&system_prompt);
             let default_max_tokens = self.config.endpoint.max_tokens;
@@ -1838,6 +1877,7 @@ impl BenchmarkRunner {
                         Ok(result) => {
                             // Request completed normally
                             completed.fetch_add(1, Ordering::Relaxed);
+                            mark_completion(&last_completion, test_start);
                             result
                         }
                         Err(_) => {
@@ -1865,6 +1905,7 @@ impl BenchmarkRunner {
                     )
                     .await;
                     completed.fetch_add(1, Ordering::Relaxed);
+                    mark_completion(&last_completion, test_start);
                     result
                 };
                 // No longer outstanding (queued + in-flight).
@@ -1918,7 +1959,9 @@ impl BenchmarkRunner {
         }
         info!("Main test: {} requests", completed.load(Ordering::Relaxed));
 
-        Ok(test_duration)
+        // Divide completed work by the interval it actually occupied rather than
+        // the nominal window -- see `throughput_window`.
+        Ok(throughput_window(&last_completion, test_duration))
     }
 
     async fn generate_report(&self, report_builder: ReportBuilder) -> Result<()> {
@@ -2604,6 +2647,39 @@ mod tests {
         // (it can't fill the pipe) and would starve `total_requests` termination.
         assert_eq!(effective_outstanding_cap(Some(10), 50), 50);
         assert_eq!(effective_outstanding_cap(Some(0), 50), 50);
+    }
+
+    #[test]
+    fn throughput_window_excludes_the_discarded_tail() {
+        // Throughput divides completed work by a window, so both must describe the
+        // same interval. A 30s bound whose 4th request is still in flight has only
+        // ~24.6s of counted work; dividing by 30 charges the run for time whose
+        // output was thrown away, which is what made throughput quantise onto
+        // `n * max_tokens / window` instead of converging on a rate.
+        let last: LastCompletionUs = Arc::new(AtomicU64::new(0));
+        last.store(24_600_000, Ordering::Relaxed);
+        assert_eq!(
+            throughput_window(&last, Duration::from_secs(30)),
+            Duration::from_micros(24_600_000)
+        );
+
+        // Nothing completed: fall back to the wall clock rather than dividing by
+        // zero and reporting an infinite rate.
+        let none: LastCompletionUs = Arc::new(AtomicU64::new(0));
+        assert_eq!(
+            throughput_window(&none, Duration::from_secs(30)),
+            Duration::from_secs(30)
+        );
+
+        // With concurrency the window is the LATEST completion, not the last one
+        // recorded -- `mark_completion` uses fetch_max for exactly this.
+        let racy: LastCompletionUs = Arc::new(AtomicU64::new(0));
+        racy.fetch_max(9_000_000, Ordering::Relaxed);
+        racy.fetch_max(3_000_000, Ordering::Relaxed);
+        assert_eq!(
+            throughput_window(&racy, Duration::from_secs(30)),
+            Duration::from_micros(9_000_000)
+        );
     }
 
     #[test]
