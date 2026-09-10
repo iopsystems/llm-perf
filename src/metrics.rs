@@ -117,6 +117,12 @@ pub static MALFORMED_CHUNKS: Counter = Counter::new();
 #[metric(name = "streamed_content_chunks")]
 pub static STREAMED_CONTENT_CHUNKS: Counter = Counter::new();
 
+// Counted requests whose TTFT came from the first stream event rather than from a
+// delta carrying text — see `StreamResponse::used_ttft_fallback`. Non-zero means
+// the TTFT histogram is a prefill proxy for those requests, not token-anchored.
+#[metric(name = "ttft_fallback_requests")]
+pub static TTFT_FALLBACK_REQUESTS: Counter = Counter::new();
+
 #[metric(name = "conversation_latency", metadata = { unit = "nanoseconds" })]
 pub static CONVERSATION_LATENCY: AtomicHistogram = AtomicHistogram::new(7, 64);
 
