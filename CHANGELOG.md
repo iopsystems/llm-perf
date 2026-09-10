@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-09-10
+
+### Bug Fixes
+
+- Report TTFT when a response carries no textual delta (#170) — a reasoning model can spend its whole token budget on the `<think>` open tag, which the server's parser consumes without emitting a delta, leaving the TTFT histogram empty and the report showing `0.0 ms`. TTFT now falls back to the first stream event, and a warning says when that substitution happened.
+- Divide throughput by the window the counted work occupied (#169) — `duration_secs` was nominal wall clock while `output_tokens` counted only completed requests, quantizing throughput onto `n x max_tokens / window`.
+- Derive teardown grace from the work, and say when it truncates (#168) — a fixed 60s grace bounded the whole test under a closed-loop worker pool, silently dropping requests from `total_requests`.
+
 ### Infrastructure
 
 - Drop Debian 11 (bullseye) from the release matrix — EOL 2026-08-31
