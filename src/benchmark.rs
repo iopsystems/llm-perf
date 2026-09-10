@@ -264,6 +264,26 @@ fn warn_if_eos_not_ignored(report: &crate::report::BenchmarkReport, max_tokens: 
     }
 }
 
+/// Warn when TTFT was measured from the first stream event rather than from a
+/// token. A reasoning model whose whole budget goes to the `<think>` open tag
+/// emits no textual delta at all, so the histogram would otherwise stay empty and
+/// the report would say 0.0 ms — indistinguishable from "instant".
+fn warn_if_ttft_fell_back(report: &crate::report::BenchmarkReport) {
+    let fallbacks = crate::metrics::TTFT_FALLBACK_REQUESTS.value();
+    if fallbacks == 0 || report.summary.requests_successful == 0 {
+        return;
+    }
+    warn!(
+        "TTFT for {fallbacks} of {} counted requests came from the first stream event, \
+         not from a token: no chunk carried content or reasoning_content. A reasoning \
+         model spends its first token(s) on the <think> tag, which the server's parser \
+         emits no delta for, so a small max_tokens yields no textual delta at all. Those \
+         samples measure prefill and exclude the first decode step(s); raise max_tokens \
+         for token-anchored TTFT.",
+        report.summary.requests_successful
+    );
+}
+
 /// Latest point at which a *counted* request finished, as micros since the test
 /// start. Zero means nothing completed.
 type LastCompletionUs = Arc<AtomicU64>;
@@ -2180,6 +2200,9 @@ impl BenchmarkRunner {
                         let turn_slip = if turn_idx == 0 { slip } else { Duration::ZERO };
 
                         if let Some(ttft) = stream.time_to_first_token() {
+                            if stream.used_ttft_fallback() {
+                                crate::metrics::TTFT_FALLBACK_REQUESTS.increment();
+                            }
                             Metrics::record_ttft(ttft + turn_slip, input_tokens);
                             // Record cache outcome only for first turn (where bust_prefix applies)
                             if turn_idx == 0 {
@@ -2406,6 +2429,9 @@ impl BenchmarkRunner {
                     // TTFT includes the queue wait (slip), so a saturated run shows
                     // the real time-to-first-token rather than hiding the queue.
                     if let Some(ttft) = stream.time_to_first_token() {
+                        if stream.used_ttft_fallback() {
+                            crate::metrics::TTFT_FALLBACK_REQUESTS.increment();
+                        }
                         Metrics::record_ttft(ttft + slip, input_tokens);
                         // Record cache outcome split by expected/actual hit using TTFT
                         let actual_hit = stream.server_usage().and_then(actual_cache_hit_option);
@@ -2569,6 +2595,7 @@ impl BenchmarkRunner {
         if self.config.endpoint.ignore_eos == Some(true) {
             warn_if_eos_not_ignored(report, self.config.endpoint.max_tokens);
         }
+        warn_if_ttft_fell_back(report);
 
         println!(
             "{} Throughput: Requests/s: {:.2} Input tokens/s: {:.2} Output tokens/s: {:.2}",

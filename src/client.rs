@@ -617,6 +617,7 @@ impl OpenAIClient {
             idle_timeout: self.stream_idle_timeout,
             first_reasoning_token_time: None,
             first_content_token_time: None,
+            first_chunk_time: None,
             last_reasoning_token_time: None,
             last_content_token_time: None,
             reasoning_inter_token_latencies: Vec::new(),
@@ -802,6 +803,41 @@ fn parse_sse_line(line: &[u8]) -> SseEvent {
     }
 }
 
+/// Pick TTFT from the earliest textual delta, falling back to the first stream
+/// event when the response carried no text at all.
+///
+/// The fallback exists because a reasoning model can spend its entire token
+/// budget on the `<think>` open tag, which the server's reasoning parser
+/// consumes without emitting a delta: the stream then carries only a `role`
+/// chunk and a `finish_reason` chunk. Returning `None` there leaves the TTFT
+/// histogram empty, which the report renders as `0.0 ms` — a value downstream
+/// consumers cannot distinguish from a real, impossibly-fast measurement.
+///
+/// The fallback is a slight underestimate: the server starts streaming once
+/// prefill completes, so it captures prefill but excludes the first decode
+/// step(s). `ttft_is_fallback` says when that substitution happened.
+fn select_ttft(
+    reasoning: Option<Duration>,
+    content: Option<Duration>,
+    first_chunk: Option<Duration>,
+) -> Option<Duration> {
+    match (reasoning, content) {
+        (Some(r), Some(c)) => Some(r.min(c)),
+        (Some(r), None) => Some(r),
+        (None, Some(c)) => Some(c),
+        (None, None) => first_chunk,
+    }
+}
+
+/// Whether `select_ttft` would substitute the first stream event for a token.
+fn ttft_is_fallback(
+    reasoning: Option<Duration>,
+    content: Option<Duration>,
+    first_chunk: Option<Duration>,
+) -> bool {
+    reasoning.is_none() && content.is_none() && first_chunk.is_some()
+}
+
 pub struct StreamResponse {
     response: reqwest::Response,
     start_time: Instant,
@@ -810,6 +846,12 @@ pub struct StreamResponse {
     // Phase-specific TTFT tracking
     first_reasoning_token_time: Option<Duration>,
     first_content_token_time: Option<Duration>,
+    /// Arrival of the first stream event of any kind, textual or not. A
+    /// reasoning model can consume its whole token budget on the `<think>` open
+    /// tag, which the server's reasoning parser swallows — the stream then
+    /// carries only a `role` chunk and a `finish_reason` chunk, and neither of
+    /// the two fields above is ever set. This is the fallback TTFT for that case.
+    first_chunk_time: Option<Duration>,
     // Phase-specific last-token tracking for ITL
     last_reasoning_token_time: Option<Instant>,
     last_content_token_time: Option<Instant>,
@@ -911,6 +953,13 @@ impl StreamResponse {
     }
 
     fn record_chunk_metrics(&mut self, chunk: &ChatCompletionChunk) {
+        // First stream event of any kind. The server only starts streaming once
+        // prefill is done, so this bounds TTFT from below even when no chunk ever
+        // carries text.
+        if self.first_chunk_time.is_none() {
+            self.first_chunk_time = Some(self.start_time.elapsed());
+        }
+
         // Capture server-reported usage from the final chunk
         if let Some(usage) = &chunk.usage {
             self.server_usage = Some(usage.clone());
@@ -967,15 +1016,27 @@ impl StreamResponse {
 
     /// First token of any kind (reasoning or content) — prefill latency.
     pub fn time_to_first_token(&self) -> Option<Duration> {
-        match (
+        select_ttft(
             self.first_reasoning_token_time,
             self.first_content_token_time,
-        ) {
-            (Some(r), Some(c)) => Some(r.min(c)),
-            (Some(r), None) => Some(r),
-            (None, Some(c)) => Some(c),
-            (None, None) => None,
-        }
+            self.first_chunk_time,
+        )
+    }
+
+    /// Whether `time_to_first_token` had to fall back to the first stream event
+    /// because no chunk carried `content` or `reasoning_content`. Callers that
+    /// need strictly token-anchored timing should check this.
+    pub fn used_ttft_fallback(&self) -> bool {
+        ttft_is_fallback(
+            self.first_reasoning_token_time,
+            self.first_content_token_time,
+            self.first_chunk_time,
+        )
+    }
+
+    /// Arrival of the first stream event of any kind, textual or not.
+    pub fn time_to_first_stream_event(&self) -> Option<Duration> {
+        self.first_chunk_time
     }
 
     pub fn time_to_first_reasoning_token(&self) -> Option<Duration> {
@@ -1307,6 +1368,37 @@ fn normalize_model_name(model: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ttft_prefers_the_earliest_textual_delta() {
+        let ms = |n| Some(Duration::from_millis(n));
+        // Reasoning first (the usual thinking-model shape).
+        assert_eq!(select_ttft(ms(40), ms(900), ms(35)), ms(40));
+        // Content first.
+        assert_eq!(select_ttft(ms(900), ms(50), ms(45)), ms(50));
+        // Only one of the two present.
+        assert_eq!(select_ttft(ms(40), None, ms(35)), ms(40));
+        assert_eq!(select_ttft(None, ms(50), ms(35)), ms(50));
+        // A textual delta always wins over the stream event, even a later one.
+        assert!(!ttft_is_fallback(ms(40), None, ms(35)));
+    }
+
+    #[test]
+    fn ttft_falls_back_to_the_first_stream_event_when_no_delta_carried_text() {
+        // The Qwen3-4B shape at max_tokens=1: llama.cpp's reasoning parser
+        // consumes the <think> open tag and emits no delta, so the stream is just
+        // a role chunk and a finish_reason chunk. Verified against a live server.
+        let first_chunk = Some(Duration::from_millis(1359));
+        assert_eq!(select_ttft(None, None, first_chunk), first_chunk);
+        assert!(ttft_is_fallback(None, None, first_chunk));
+    }
+
+    #[test]
+    fn ttft_is_none_only_when_nothing_streamed_at_all() {
+        assert_eq!(select_ttft(None, None, None), None);
+        // Nothing to substitute means nothing to flag.
+        assert!(!ttft_is_fallback(None, None, None));
+    }
 
     #[test]
     fn usage_with_cached_tokens_parses() {
