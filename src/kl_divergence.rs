@@ -30,6 +30,13 @@ pub struct KlReport {
     pub num_prompts_compared: usize,
     pub num_positions_compared: usize,
     pub num_prompts_skipped: usize,
+    /// Positions where a token in the baseline's top-N fell outside the
+    /// candidate's, so its probability was bounded rather than observed. A
+    /// non-zero share means the aggregate is a lower bound, not a measurement —
+    /// read it next to `mean`.
+    pub num_positions_censored: usize,
+    /// `num_positions_censored / num_positions_compared`, for convenience.
+    pub censored_fraction: f64,
     pub aggregate: AggregateStats,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_prompt: Option<Vec<PromptKl>>,
@@ -100,6 +107,8 @@ fn compute_kl_report(
         candidate.iter().map(|r| (r.prompt_index, r)).collect();
 
     let mut all_kl_values: Vec<f64> = Vec::new();
+
+    let mut censored_positions: usize = 0;
     let mut per_prompt_results: Vec<PromptKl> = Vec::new();
     let mut skipped = 0;
 
@@ -135,10 +144,12 @@ fn compute_kl_report(
             let base_token = &base_record.tokens[pos];
             let cand_token = &cand_record.tokens[pos];
 
-            let kl = compute_position_kl(&base_token.top_logprobs, &cand_token.top_logprobs);
-
-            prompt_kl_values.push(kl);
-            all_kl_values.push(kl);
+            let r = compute_position_kl(&base_token.top_logprobs, &cand_token.top_logprobs);
+            if r.censored {
+                censored_positions += 1;
+            }
+            prompt_kl_values.push(r.kl);
+            all_kl_values.push(r.kl);
         }
 
         if include_per_prompt && !prompt_kl_values.is_empty() {
@@ -167,6 +178,12 @@ fn compute_kl_report(
         num_prompts_compared: baseline.len() - skipped,
         num_positions_compared: all_kl_values.len(),
         num_prompts_skipped: skipped,
+        num_positions_censored: censored_positions,
+        censored_fraction: if all_kl_values.is_empty() {
+            0.0
+        } else {
+            censored_positions as f64 / all_kl_values.len() as f64
+        },
         aggregate,
         per_prompt: if include_per_prompt {
             Some(per_prompt_results)
@@ -176,17 +193,39 @@ fn compute_kl_report(
     })
 }
 
+/// KL for one position, plus whether it was censored.
+#[derive(Debug, Clone, Copy)]
+struct PositionKlResult {
+    kl: f64,
+    /// True when at least one token in P fell outside Q's top-N, so its
+    /// probability was bounded rather than observed.
+    censored: bool,
+}
+
 /// Compute KL(P || Q) for a single token position using top_logprobs
 ///
-/// Converts logprobs to probability distributions, adds a remainder bucket
-/// for tokens outside the top-N, and uses epsilon smoothing for tokens
-/// present in P but missing from Q.
+/// Converts logprobs to probability distributions and adds a remainder bucket
+/// for tokens outside the top-N.
+///
+/// A token present in P but missing from Q's top-N is *censored*, not absent:
+/// all we know is that its probability is below the smallest one Q did return.
+/// Substituting a fixed epsilon (1e-10) for it fabricates a constant — with a
+/// confident baseline it contributes ln(1e10) = 23.03 no matter how wrong Q
+/// actually is, and the bias is one-directional because the epsilon sits far
+/// below anything the window could contain. So substitute Q's own smallest
+/// returned probability instead, which makes each censored term a defensible
+/// *lower bound* on the true contribution. `censored` reports when this
+/// happened, since the aggregate alone cannot express how much of it is bounded
+/// rather than measured. See issue #173.
 fn compute_position_kl(
     p_top: &[crate::client::TopLogprob],
     q_top: &[crate::client::TopLogprob],
-) -> f64 {
+) -> PositionKlResult {
     if p_top.is_empty() {
-        return 0.0;
+        return PositionKlResult {
+            kl: 0.0,
+            censored: false,
+        };
     }
 
     // Build probability distributions from logprobs
@@ -206,14 +245,35 @@ fn compute_position_kl(
     let p_remainder = (1.0 - p_sum).max(0.0);
     let q_remainder = (1.0 - q_sum).max(0.0);
 
+    // Ceiling for a token Q didn't return: it cannot be more likely than the
+    // least likely token Q *did* return. Falls back to EPSILON only when Q is
+    // empty, where there is no window to bound against.
+    let q_floor = q_dist
+        .values()
+        .copied()
+        .fold(f64::INFINITY, f64::min)
+        .min(1.0);
+    let q_floor = if q_floor.is_finite() {
+        q_floor
+    } else {
+        EPSILON
+    };
+
     // KL(P || Q) = Σ P(t) × ln(P(t) / Q(t))
     let mut kl = 0.0;
+    let mut censored = false;
 
     for (token, &p_prob) in &p_dist {
         if p_prob <= 0.0 {
             continue;
         }
-        let q_prob = q_dist.get(token).copied().unwrap_or(EPSILON);
+        let q_prob = match q_dist.get(token).copied() {
+            Some(q) => q,
+            None => {
+                censored = true;
+                q_floor
+            }
+        };
         let q_prob = q_prob.max(EPSILON);
         kl += p_prob * (p_prob / q_prob).ln();
     }
@@ -224,7 +284,10 @@ fn compute_position_kl(
         kl += p_remainder * (p_remainder / q_rem).ln();
     }
 
-    kl.max(0.0) // KL divergence is non-negative
+    PositionKlResult {
+        kl: kl.max(0.0), // KL divergence is non-negative
+        censored,
+    }
 }
 
 /// Compute aggregate statistics from a vector of values
@@ -271,6 +334,11 @@ fn print_console_report(report: &KlReport, baseline_path: &Path, candidate_path:
     println!("  Prompts compared: {}", report.num_prompts_compared);
     println!("  Prompts skipped:  {}", report.num_prompts_skipped);
     println!("  Token positions:  {}", report.num_positions_compared);
+    println!(
+        "  Censored:         {} ({:.1}%)",
+        report.num_positions_censored,
+        report.censored_fraction * 100.0
+    );
     println!();
     println!("  Aggregate KL Divergence (nats):");
     println!("    Mean:    {:.6}", report.aggregate.mean);
@@ -280,6 +348,16 @@ fn print_console_report(report: &KlReport, baseline_path: &Path, candidate_path:
     println!("    P99:     {:.6}", report.aggregate.p99);
     println!("    Max:     {:.6}", report.aggregate.max);
     println!();
+    if report.censored_fraction > 0.0 {
+        println!(
+            "  NOTE: {:.1}% of positions had a baseline token outside the candidate's\n\
+             \x20       top-N window. Their probability is bounded by the smallest the\n\
+             \x20       candidate returned, so these figures are a LOWER BOUND on the\n\
+             \x20       true divergence. Raise top_logprobs to narrow the window.",
+            report.censored_fraction * 100.0
+        );
+        println!();
+    }
     println!("  Interpretation:");
 
     let mean = report.aggregate.mean;
@@ -317,7 +395,7 @@ mod tests {
             make_top_logprob("world", -2.0),
             make_top_logprob("foo", -3.0),
         ];
-        let kl = compute_position_kl(&top, &top);
+        let kl = compute_position_kl(&top, &top).kl;
         assert!(
             kl < 1e-6,
             "KL of identical distributions should be ~0, got {}",
@@ -335,27 +413,91 @@ mod tests {
             make_top_logprob("hello", -1.0), // ~0.368
             make_top_logprob("world", -1.5), // ~0.223
         ];
-        let kl = compute_position_kl(&p, &q);
+        let kl = compute_position_kl(&p, &q).kl;
         assert!(kl > 0.0, "KL of different distributions should be positive");
     }
 
     #[test]
     fn test_missing_token_in_q() {
+        // Realistic censoring: the baseline is confident about a token that is
+        // nowhere in Q's window, and its probability exceeds Q's floor.
         let p = vec![
-            make_top_logprob("hello", -0.5),
-            make_top_logprob("world", -2.0),
+            make_top_logprob("hello", -0.1), // ~0.905
+            make_top_logprob("world", -3.0),
         ];
         let q = vec![
-            make_top_logprob("hello", -0.5),
-            make_top_logprob("other", -2.0), // "world" missing
+            make_top_logprob("other", -0.1),
+            make_top_logprob("things", -3.0), // "hello" and "world" both missing
         ];
-        let kl = compute_position_kl(&p, &q);
-        assert!(kl > 0.0, "Missing token should increase KL");
+        let r = compute_position_kl(&p, &q);
+        assert!(r.kl > 0.0, "Missing token should increase KL");
+        assert!(r.censored, "a token outside Q's top-N is censored");
+    }
+
+    #[test]
+    fn censored_token_is_bounded_by_q_floor_not_by_epsilon() {
+        // The regression from issue #173. P is confident about a token Q never
+        // returned. The old code substituted EPSILON = 1e-10, contributing
+        // ln(1e10) = 23.03 regardless of how wrong Q actually was.
+        let p = vec![make_top_logprob("alpha", -0.0001)]; // ~1.0
+        let q = vec![
+            make_top_logprob("beta", -1.0),
+            make_top_logprob("gamma", -6.0), // floor ~0.00248
+        ];
+        let r = compute_position_kl(&p, &q);
+        assert!(r.censored);
+
+        let epsilon_ceiling = (1.0f64 / 1e-10).ln(); // 23.0259
+        assert!(
+            r.kl < epsilon_ceiling / 2.0,
+            "bounded by Q's floor, not epsilon: got {} (epsilon ceiling {})",
+            r.kl,
+            epsilon_ceiling
+        );
+        // ~ln(1/0.00248) = 6.0, i.e. Q's own smallest returned probability.
+        assert!((r.kl - 6.0).abs() < 0.2, "expected ~6.0, got {}", r.kl);
+    }
+
+    #[test]
+    fn uncensored_position_is_not_flagged() {
+        let top = vec![
+            make_top_logprob("hello", -0.1),
+            make_top_logprob("world", -2.0),
+        ];
+        let r = compute_position_kl(&top, &top);
+        assert!(!r.censored, "every P token was present in Q");
+        assert!(r.kl < 1e-6);
+    }
+
+    #[test]
+    fn report_counts_censored_positions() {
+        // One position fully observed, one censored → fraction 0.5.
+        let tok = |tops: Vec<TopLogprob>| TokenLogprob {
+            token: "t".into(),
+            logprob: -0.1,
+            top_logprobs: tops,
+        };
+        let shared = vec![make_top_logprob("a", -0.1), make_top_logprob("b", -2.0)];
+        let elsewhere = vec![make_top_logprob("x", -0.1), make_top_logprob("y", -2.0)];
+        let baseline = vec![LogprobRecord {
+            prompt_index: 0,
+            prompt: String::new(),
+            tokens: vec![tok(shared.clone()), tok(shared.clone())],
+        }];
+        let candidate = vec![LogprobRecord {
+            prompt_index: 0,
+            prompt: String::new(),
+            tokens: vec![tok(shared.clone()), tok(elsewhere)],
+        }];
+        let rep = compute_kl_report(&baseline, &candidate, false).unwrap();
+        assert_eq!(rep.num_positions_compared, 2);
+        assert_eq!(rep.num_positions_censored, 1);
+        assert!((rep.censored_fraction - 0.5).abs() < 1e-9);
     }
 
     #[test]
     fn test_empty_p() {
-        let kl = compute_position_kl(&[], &[make_top_logprob("a", -1.0)]);
+        let kl = compute_position_kl(&[], &[make_top_logprob("a", -1.0)]).kl;
         assert_eq!(kl, 0.0);
     }
 
