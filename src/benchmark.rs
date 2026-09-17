@@ -475,6 +475,7 @@ impl BenchmarkRunner {
                 .then(|| Duration::from_secs(config.endpoint.stream_idle_timeout)),
             retry_on_timeout: config.endpoint.retry_on_timeout,
             chat_template_kwargs: config.endpoint.chat_template_kwargs.clone(),
+            extra_headers: config.endpoint.extra_headers.clone(),
             ignore_eos: config.endpoint.ignore_eos,
         })?;
 

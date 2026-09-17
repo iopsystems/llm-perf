@@ -2,6 +2,7 @@ use anyhow::Result;
 use rand::Rng;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -47,6 +48,7 @@ pub struct OpenAIClient {
     /// a possibly-still-running, non-idempotent generation).
     retry_on_timeout: bool,
     chat_template_kwargs: Option<serde_json::Value>,
+    extra_headers: Option<HashMap<String, String>>,
     ignore_eos: Option<bool>,
 }
 
@@ -242,6 +244,8 @@ pub struct ClientConfig {
     pub retry_on_timeout: bool,
     /// Additional kwargs forwarded to the model's chat template for every request.
     pub chat_template_kwargs: Option<serde_json::Value>,
+    /// Additional headers to send with every request.
+    pub extra_headers: Option<HashMap<String, String>>,
     /// Suppress EOS so generation runs to `max_tokens` (llama.cpp / vLLM).
     pub ignore_eos: Option<bool>,
 }
@@ -303,6 +307,7 @@ impl OpenAIClient {
             stream_idle_timeout: config.stream_idle_timeout,
             retry_on_timeout: config.retry_on_timeout,
             chat_template_kwargs: config.chat_template_kwargs,
+            extra_headers: config.extra_headers,
             ignore_eos: config.ignore_eos,
         })
     }
@@ -366,7 +371,11 @@ impl OpenAIClient {
         if let Some(api_key) = &self.api_key {
             req = req.header("Authorization", format!("Bearer {}", api_key));
         }
-
+        if let Some(headers) = &self.extra_headers {
+            for (k, v) in headers {
+                req = req.header(k, v);
+            }
+        }
         let response = match req.send().await {
             Ok(resp) => resp,
             Err(e) => {
@@ -449,6 +458,11 @@ impl OpenAIClient {
         }));
         if let Some(api_key) = &self.api_key {
             req = req.header("Authorization", format!("Bearer {}", api_key));
+        }
+        if let Some(headers) = &self.extra_headers {
+            for (k, v) in headers {
+                req = req.header(k, v);
+            }
         }
         let resp = req.send().await?;
         if !resp.status().is_success() {
@@ -562,7 +576,11 @@ impl OpenAIClient {
         if let Some(api_key) = &self.api_key {
             req = req.header("Authorization", format!("Bearer {}", api_key));
         }
-
+        if let Some(headers) = &self.extra_headers {
+            for (k, v) in headers {
+                req = req.header(k, v);
+            }
+        }
         let start_time = Instant::now();
 
         // Send request and handle connection errors
