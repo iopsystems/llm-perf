@@ -4,13 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-10-07
+
 ### Features
 
-- Trace replay against vLLM — `[replay] server = "vllm"` renders and tokenizes prompts with vLLM's `/tokenize` and `/detokenize`, and reads the per-request context from `/v1/models` and the version from `/version`. The default is `"llama-server"`. The summary adds `server`.
+- Trace replay against vLLM — `[replay] server = "vllm"` renders and tokenizes prompts with vLLM's `/tokenize` and `/detokenize`, and reads the per-request context from `/v1/models` and the version from `/version`. The default is `"llama-server"`. The summary adds `server`. (#184)
 
 ### Changes
 
-- Trace replay reports reuse only as the server reported it, without a predicted value. Measuring reuse lost to load now takes a low-load run of the same sessions, compared per call on `session_id` and `call`.
+- Trace replay reports reuse only as the server reported it, without a predicted value. Measuring reuse lost to load now takes a low-load run of the same sessions, compared per call on `session_id` and `call`. (#184)
   - Per-call log: `expected_reuse` is removed.
   - Summary: `expected_reuse_tokens` and `reuse_permille_p50`/`p10` (cached over expected) are replaced by `prompt_tokens`, `calls_measured` and `cached_permille_p50`/`p10` (cached over prompt tokens, for calls whose traced reuse is above 0).
   - Metrics: the `replay_reuse` counter's `expected` kind becomes `prompt`, and the `replay_reuse_permille` histogram becomes `replay_cached_permille`. Both `replay_reuse` kinds now count every successful non-warmup call; in 0.1.19 they counted only calls with expected reuse above 0.
