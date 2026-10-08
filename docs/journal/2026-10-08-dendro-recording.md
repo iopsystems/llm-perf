@@ -34,8 +34,8 @@ and viewing stack for every metriken producer), systemslab
    `-o` removes the positional collision noted in `src/server_metrics.rs`.
    The run then leaves one archive holding the server and llm-perf on one
    timeline, readable while the run goes and after a crash. This needs rezolus
-   6.0's `record`; whether 5.23–5.25.1 record a Prometheus endpoint into a
-   `.dendro` is not checked.
+   6.0's `record`. v5.25.1's `record` help text says a Prometheus endpoint
+   records into a `.dendro` too; that is not run.
 2. **Histograms as buckets on `/metrics`.** Expose histograms as Prometheus
    `_bucket` series rather than percentile gauges, so a scrape keeps a
    distribution that rezolus's Prometheus conversion turns back into a
@@ -45,17 +45,17 @@ and viewing stack for every metriken producer), systemslab
    emit `_bucket` series without a metriken change is not checked.
 3. **Leave the git dependency.** Move to published metriken 0.11 and
    metriken-exposition 0.21. `metriken-core` declares `links`, so a build holds
-   one metriken-core version: llm-perf's metriken 0.8 is on core 0.1, and
-   metriken-archive needs metriken 0.11, on core 0.3.
-4. **Serve `/metrics/stream`** through the stream route for a registry
-   (metriken entry, piece 1; a `stream` feature of `metriken-exposition` is
-   recommended, a `metriken-streaming` crate is the alternative), and pass
-   llm-perf's base URL in `record_args` rather than its `/metrics` path, so
-   the recorder can find the stream. Once rezolus detects a source by its
-   stream (rezolus entry, "Endpoint detection"), the recorder records llm-perf
-   as it records a Rezolus agent: rows stamped by llm-perf at read time and
-   native histograms, with no Prometheus conversion. Step 2's buckets then
-   only matter to other Prometheus consumers.
+   one metriken-core version: llm-perf's metriken 0.8 is on core 0.1, and the
+   stream route and recording its own registry (both through
+   `metriken-exposition`) need metriken 0.11, on core 0.3.
+4. **Serve `/metrics/stream`** through `metriken-exposition`'s stream route
+   for a registry (metriken entry, piece 1), and pass llm-perf's base URL in
+   `record_args` rather than its `/metrics` path, so the recorder can find the
+   stream. Once rezolus detects a source by its stream (rezolus entry,
+   "Endpoint detection"), the recorder records llm-perf as it records a
+   Rezolus agent: rows stamped by llm-perf at read time and native histograms,
+   with no Prometheus conversion. Step 2's buckets then only matter to other
+   Prometheus consumers.
 5. **Record in process with `metriken-recorder`** (metriken entry, piece 2):
    llm-perf records the server under test and its own registry into one
    archive itself, in place of running `rezolus record`, and no longer needs a
@@ -69,7 +69,9 @@ and viewing stack for every metriken producer), systemslab
    `[metrics] output` as an option for one release.
 
 Step 1 needs no metriken change and can ship first; step 2 may need one (see
-above).
+above). Step 4 waits for the metriken entry's path step 3 (the stream route),
+step 5 for path step 4 (`metriken-recorder`), and step 6 for path step 5
+(templates).
 
 ## GO criteria
 
