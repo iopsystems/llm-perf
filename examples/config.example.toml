@@ -26,6 +26,12 @@ timeout = 60
 # API key for authentication (if required by your server)
 # api_key = "sk-..."
 
+# Additional headers to send with every request. Useful for providers that
+# require custom headers (for example, OpenCode Go requires
+# `x-opencode-session`).
+# [endpoint.extra_headers]
+# x-opencode-session = "my-session-id"
+
 # Retry Configuration
 # Number of times to retry failed requests (0 = no retries)
 # Retriable errors: timeouts, connection errors, HTTP 5xx server errors

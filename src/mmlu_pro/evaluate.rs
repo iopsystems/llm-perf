@@ -522,6 +522,7 @@ pub async fn run_evaluation(
         stream_idle_timeout: None,
         retry_on_timeout: true,
         chat_template_kwargs: None,
+        extra_headers: None,
         ignore_eos: None,
         pool_idle_timeout: crate::client::DEFAULT_POOL_IDLE_TIMEOUT,
     };

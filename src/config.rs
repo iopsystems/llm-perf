@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Resolve the effective `max_tokens` for a request.
@@ -132,6 +133,10 @@ pub struct EndpointConfig {
     /// `warn_if_eos_not_ignored`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ignore_eos: Option<bool>,
+    /// Additional headers to send with every request. Useful for providers that
+    /// require custom headers such as `x-opencode-session`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_headers: Option<HashMap<String, String>>,
     /// Exact tokenizer for prompt sizing: a local `tokenizer.json` path OR a
     /// HuggingFace model id (downloaded/cached). When unset, the tool calibrates a
     /// tiktoken estimate against the server's `/tokenize` if available, else uses a
