@@ -19,7 +19,7 @@
 use super::kv_events::{KvEventKind, KvEventRecord};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::path::Path;
 
@@ -55,7 +55,12 @@ pub enum MissClass {
     /// sent because the attention blocks were removed.
     EvictedBeforeSend,
     /// Stored earlier; the attention blocks were held when the call was sent
-    /// but no skipping group held the state at the end of any held prefix.
+    /// but no skipping group had ever stored the state at the end of any held
+    /// prefix.
+    StateNeverStored,
+    /// Stored earlier; the attention blocks were held when the call was sent,
+    /// and the state at the end of a held prefix had been stored but was no
+    /// longer held by every skipping group.
     StateEvictedBeforeSend,
     /// A reusable prefix was held when the call was sent, and none was held
     /// without a break from the send to the first token.
@@ -175,6 +180,8 @@ struct Held {
     copies: HashMap<(u32, u64), (u64, f64)>,
     /// When each fingerprint was first stored in a non-skipping group.
     first_stored: HashMap<u64, f64>,
+    /// Every (group, fingerprint) stored so far.
+    ever_stored: HashSet<(u32, u64)>,
 }
 
 impl Held {
@@ -184,6 +191,7 @@ impl Held {
             c.1 = t_ms;
         }
         c.0 += 1;
+        self.ever_stored.insert((group, fp));
     }
 
     /// A removal of a block with no copies held (its store was not captured)
@@ -220,6 +228,16 @@ impl Held {
             .find(|&k| skipping.iter().all(|&g| self.holds(g, fps[k - 1], since)))
             .unwrap_or(0);
         (held, reusable)
+    }
+
+    /// Whether every group in `skipping` has ever stored the last block of
+    /// one of the first `held` prefixes of `fps`.
+    fn state_ever_stored(&self, fps: &[u64], held: usize, skipping: &[u32]) -> bool {
+        fps[..held].iter().any(|&fp| {
+            skipping
+                .iter()
+                .all(|&g| self.ever_stored.contains(&(g, fp)))
+        })
     }
 }
 
@@ -344,6 +362,7 @@ pub fn analyse(
     let mut at_send = vec![(0, 0); analysed.len()];
     let mut at_first = vec![(0, 0); analysed.len()];
     let mut seen_before_send = vec![false; analysed.len()];
+    let mut state_seen_before_send = vec![false; analysed.len()];
     let mut held = Held::default();
     let mut next = 0;
     for q in &queries {
@@ -366,6 +385,8 @@ pub fn analyse(
             at_first[q.call] = held.prefix(fps, &full, &skipping, Some(c.sent_ms));
         } else {
             at_send[q.call] = held.prefix(fps, &full, &skipping, None);
+            state_seen_before_send[q.call] =
+                held.state_ever_stored(fps, at_send[q.call].0, &skipping);
             seen_before_send[q.call] = fps
                 .first()
                 .is_some_and(|fp| held.first_stored.contains_key(fp));
@@ -403,6 +424,8 @@ pub fn analyse(
                 MissClass::EvictedWhileQueued
             } else if !seen_before_send[i] {
                 MissClass::NeverStored
+            } else if held_send > 0 && !state_seen_before_send[i] {
+                MissClass::StateNeverStored
             } else if held_send > 0 {
                 MissClass::StateEvictedBeforeSend
             } else {
@@ -645,6 +668,21 @@ mod tests {
         assert_eq!(s.misses, 5);
         assert_eq!(s.calls_cached_below_reusable_at_first_token, 1);
         assert_eq!(s.calls_all_blocks_stored, 4);
+    }
+
+    #[test]
+    fn a_state_never_stored_is_not_counted_as_evicted() {
+        const OTHER: [u32; 4] = [7, 7, 7, 7];
+        let mut log = Log::default();
+        log.stored(0.0, 0, &["a", "b", "c"], None, &PROMPT);
+        // Group 1 skips blocks, and only ever stores a state for OTHER.
+        log.stored(0.0, 0, &["w", "x"], None, &OTHER);
+        log.stored(0.0, 1, &["x"], None, &OTHER);
+        // The state for PROMPT is first stored after the call is sent.
+        log.stored(20.0, 1, &["b"], None, &PROMPT[..4]);
+        let (_, lines) = classes(&[call(1, &PROMPT, 10.0, 5.0, 0)], &log);
+        assert_eq!(lines[0].held_prefix_at_send, 3);
+        assert_eq!(lines[0].miss, Some(MissClass::StateNeverStored));
     }
 
     #[test]

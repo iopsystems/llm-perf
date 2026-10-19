@@ -348,10 +348,11 @@ call's first token only blocks held without a break since the send count.
 It checks that every call's blocks appear in a stored event, counts stored
 blocks with no fingerprint and calls whose reported cached blocks exceed what
 was reusable at send, and classifies calls with traced reuse and no cached
-tokens by when their prefix was removed: never stored, removed before the
-call was sent (attention blocks, or only the Mamba state), removed between
-the send and the first token, or held without a break from the send to the
-first token. `--calls-out` writes one line per call.
+tokens by when their prefix was removed: never stored, attention blocks held
+but no Mamba state ever stored at the end of a held prefix, removed before
+the call was sent (attention blocks, or only the Mamba state), removed
+between the send and the first token, or held without a break from the send
+to the first token. `--calls-out` writes one line per call.
 
 ### Configuration
 
