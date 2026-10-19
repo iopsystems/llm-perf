@@ -301,7 +301,8 @@ blocks the server removed. Start vLLM with
 --kv-events-config '{"enable_kv_cache_events": true, "publisher": "zmq", "endpoint": "tcp://*:5557"}'
 ```
 
-and set
+vLLM binds the endpoint only when it has a wildcard host (`*`); with any
+other host it connects to it. Then set
 
 ```toml
 [replay.kv_events]
