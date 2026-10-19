@@ -375,12 +375,13 @@ level = "info"
 # system_prompt_tokens = 0  # a system prompt of this many tokens shared by every session
 # log = "replay.jsonl"      # one line per call: prompt and cached tokens, timings
 #
-# [replay.kv_events]        # vLLM only; start vLLM with --kv-events-config
+# [replay.kv_events]        # vLLM only; start vLLM with --kv-events-config and a bind endpoint (tcp://*:5557)
 # endpoint = "tcp://127.0.0.1:5557"
 # topic = ""                # vLLM's default
 # block_size = 528          # the server's prefix-cache block size in tokens
-# log = "kv-events.jsonl"   # one line per stored or removed block event
-# Match the two logs with: llm-perf kv-residency replay.jsonl kv-events.jsonl
+# log = "kv-events.jsonl"   # one line per stored, removed or cleared event
+# Match the two logs with:
+#   llm-perf kv-residency replay.jsonl kv-events.jsonl --block-size 528
 
 # =============================================================================
 # Saturation Search Configuration (Optional)

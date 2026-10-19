@@ -143,6 +143,10 @@ pub enum Command {
         replay_log: PathBuf,
         /// KV event log (replay.kv_events.log)
         events_log: PathBuf,
+        /// Block size the replay log's block_fps were computed at
+        /// (replay.kv_events.block_size)
+        #[arg(long)]
+        block_size: usize,
         /// Output format: "console" or "json"
         #[arg(long, default_value = "console")]
         format: String,

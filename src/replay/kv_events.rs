@@ -8,7 +8,7 @@
 //! the per-call log.
 //!
 //! Blocks are identified by vLLM's block hash, which is the same in every KV
-//! cache group for the same prefix. Replay adds a fingerprint of the prefix a
+//! cache group that has the same block size, for the same prefix. Replay adds a fingerprint of the prefix a
 //! block covers, computed from the block's token ids with
 //! [`block_fingerprints`], so the blocks can be matched to the calls whose
 //! prompts contain them.
@@ -30,6 +30,8 @@ use zeromq::{Socket, SocketRecv};
 const DRAIN_QUIET: Duration = Duration::from_secs(2);
 /// Longest the capture keeps receiving after the run stops.
 const DRAIN_MAX: Duration = Duration::from_secs(10);
+/// Pause after a receive error before receiving again.
+const RECEIVE_ERROR_PAUSE: Duration = Duration::from_millis(100);
 
 /// Fingerprint chained from the fingerprint of the preceding prefix and the
 /// token ids of one block (64-bit FNV-1a over the little-endian bytes).
@@ -204,7 +206,7 @@ pub struct KvEventRecord {
     pub block_size: Option<usize>,
     /// Token ids the stored event covers. More than `hashes.len() *
     /// block_size` when the group skips blocks (Mamba groups in vLLM's
-    /// "align" prefix caching).
+    /// "align" prefix caching, and sliding-window groups).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_tokens: Option<usize>,
     /// Fingerprint of each stored block (hex), where it is known: the event
@@ -261,14 +263,24 @@ impl Fingerprints {
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct KvEventStats {
     pub batches: u64,
+    /// Sequence number of the first batch received. vLLM numbers batches
+    /// from 0 when it starts, so a larger value is the number of batches
+    /// published before the capture received any.
+    pub first_seq: Option<u64>,
     pub stored_events: u64,
     pub removed_events: u64,
     pub cleared_events: u64,
-    /// Sequence numbers skipped between received batches: batches the
-    /// publisher sent that replay did not receive.
+    /// Sequence numbers skipped after the first batch received: batches the
+    /// publisher numbered that replay did not receive.
     pub batches_missed: u64,
+    /// Batches received that could not be decoded; their events are not in
+    /// the log.
+    pub batches_undecoded: u64,
+    /// Receive errors; the capture keeps receiving after each.
+    pub receive_errors: u64,
     /// Stored events whose `block_size` differs from
-    /// `replay.kv_events.block_size`.
+    /// `replay.kv_events.block_size`. Partial-block events (a block that is
+    /// not full yet) count here.
     pub block_size_mismatch: u64,
 }
 
@@ -406,8 +418,15 @@ async fn receive(
         let msg = match msg {
             Ok(m) => m,
             Err(e) => {
-                warn!("KV events: receiving: {e}");
-                break;
+                // zeromq reconnects to a peer that went away in the
+                // background; the pause keeps an error that repeats from
+                // spinning.
+                stats.receive_errors += 1;
+                if stats.receive_errors == 1 {
+                    warn!("KV events: receiving: {e}");
+                }
+                tokio::time::sleep(RECEIVE_ERROR_PAUSE).await;
+                continue;
             }
         };
         let t_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -425,9 +444,11 @@ async fn receive(
             stats.batches_missed += seq - last - 1;
         }
         last_seq = Some(seq);
+        stats.first_seq.get_or_insert(seq);
         let batch = match decode_batch(payload) {
             Ok(b) => b,
             Err(e) => {
+                stats.batches_undecoded += 1;
                 warn!("KV events: batch {seq}: {e:#}");
                 continue;
             }

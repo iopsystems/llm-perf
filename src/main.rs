@@ -60,12 +60,14 @@ fn main() -> Result<()> {
         Command::KvResidency {
             ref replay_log,
             ref events_log,
+            block_size,
             ref format,
             ref output,
             ref calls_out,
         } => llm_perf::replay::kv_residency::run(
             replay_log,
             events_log,
+            block_size,
             format,
             output.as_deref(),
             calls_out.as_deref(),

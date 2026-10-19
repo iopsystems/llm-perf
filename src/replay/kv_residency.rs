@@ -4,10 +4,17 @@
 //!
 //! A block is held while the server has stored more copies of its hash than
 //! it has removed. Each KV cache group is tracked separately. A group whose
-//! stored events cover more tokens than their blocks skips blocks (Mamba
-//! groups in vLLM's "align" prefix caching); a prefix of `k` blocks can be
-//! reused only if every other group holds blocks `0..k` and every skipping
-//! group holds block `k - 1`.
+//! stored events cover more tokens than their blocks skips blocks: Mamba
+//! groups in vLLM's "align" prefix caching, and sliding-window groups. A
+//! prefix of `k` blocks counts as reusable if every other group holds blocks
+//! `0..k` and every skipping group holds block `k - 1`, the state at the end
+//! of the prefix. That rule is right for Mamba groups and overstates what a
+//! sliding-window group can serve.
+//!
+//! vLLM stores a call's prompt blocks when it schedules the call, before its
+//! first token. At the first token, a block counts as held only if it has
+//! been held without a break since the call was sent, so the call's own
+//! store of an evicted prefix does not count.
 
 use super::kv_events::{KvEventKind, KvEventRecord};
 use anyhow::{Context, Result, bail};
@@ -25,6 +32,8 @@ pub struct CallLine {
     pub sent_ms: f64,
     #[serde(default)]
     pub ttft_ms: Option<f64>,
+    #[serde(default)]
+    pub rendered_tokens: Option<u64>,
     #[serde(default)]
     pub prompt_tokens: Option<u64>,
     #[serde(default)]
@@ -48,10 +57,11 @@ pub enum MissClass {
     /// Stored earlier; the attention blocks were held when the call was sent
     /// but no skipping group held the state at the end of any held prefix.
     StateEvictedBeforeSend,
-    /// A reusable prefix was held when the call was sent and none by its
-    /// first token.
+    /// A reusable prefix was held when the call was sent, and none was held
+    /// without a break from the send to the first token.
     EvictedWhileQueued,
-    /// A reusable prefix was still held at the first token.
+    /// A reusable prefix was held without a break from the send to the first
+    /// token.
     HeldAtFirstToken,
 }
 
@@ -70,9 +80,12 @@ pub struct CallResidency {
     pub held_prefix_at_send: usize,
     /// Longest prefix every group could have served when the call was sent.
     pub reusable_at_send: usize,
+    /// As `held_prefix_at_send`, counting only blocks held without a break
+    /// from the send to the first token.
     pub held_prefix_at_first_token: usize,
     pub reusable_at_first_token: usize,
-    /// Every full block of the prompt appears in a stored event.
+    /// Every full block of the prompt appears in a stored event with a known
+    /// fingerprint.
     pub all_blocks_stored: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub miss: Option<MissClass>,
@@ -90,17 +103,23 @@ pub struct GroupSummary {
 pub struct ResidencySummary {
     pub block_size: usize,
     pub groups: Vec<GroupSummary>,
+    /// Stored blocks with no fingerprint: the event's parent block was never
+    /// given one (stored before the capture started, or in a batch the
+    /// capture did not receive) and no other event gave the hash one.
+    pub stored_unknown: u64,
     /// Removed blocks whose hash no stored event gave a fingerprint.
     pub removed_unknown: u64,
     /// Successful non-warmup calls with block fingerprints.
     pub calls: usize,
-    /// Of those, calls whose every full block appears in a stored event: a
-    /// check that replay's rendered prompt matches the server's tokens.
+    /// Of those, calls whose every full block appears in a stored event with
+    /// a known fingerprint. A call is missing from this count when the
+    /// server's tokens differ from replay's rendered prompt, or when its
+    /// blocks have no fingerprint (`stored_unknown`).
     pub calls_all_blocks_stored: usize,
     /// Calls that reused more blocks than were reusable when they were sent.
     pub calls_cached_above_reusable_at_send: usize,
-    /// Calls that reused fewer blocks than were reusable at their first
-    /// token.
+    /// Calls that reused fewer blocks than were reusable, held without a
+    /// break, at their first token.
     pub calls_cached_below_reusable_at_first_token: usize,
     /// Calls with at least one reusable block in the trace and none reused.
     pub misses: usize,
@@ -152,44 +171,72 @@ struct Query {
 /// Blocks held at a point in the event log.
 #[derive(Default)]
 struct Held {
-    copies: HashMap<(u32, u64), i64>,
+    /// Copies held, and since when at least one has been held.
+    copies: HashMap<(u32, u64), (u64, f64)>,
     /// When each fingerprint was first stored in a non-skipping group.
     first_stored: HashMap<u64, f64>,
 }
 
 impl Held {
-    fn holds(&self, group: u32, fp: u64) -> bool {
-        self.copies.get(&(group, fp)).is_some_and(|&n| n > 0)
+    fn add(&mut self, group: u32, fp: u64, t_ms: f64) {
+        let c = self.copies.entry((group, fp)).or_insert((0, t_ms));
+        if c.0 == 0 {
+            c.1 = t_ms;
+        }
+        c.0 += 1;
+    }
+
+    /// A removal of a block with no copies held (its store was not captured)
+    /// is ignored.
+    fn remove(&mut self, group: u32, fp: u64) {
+        if let Some(c) = self.copies.get_mut(&(group, fp)) {
+            c.0 = c.0.saturating_sub(1);
+        }
+    }
+
+    /// Whether a copy is held and has been held without a break since
+    /// `since` (or at all, with `None`).
+    fn holds(&self, group: u32, fp: u64, since: Option<f64>) -> bool {
+        self.copies
+            .get(&(group, fp))
+            .is_some_and(|&(n, from)| n > 0 && since.is_none_or(|s| from <= s))
     }
 
     /// Leading blocks every group in `full` holds, and the longest of those
     /// prefixes whose last block every group in `skipping` holds.
-    fn prefix(&self, fps: &[u64], full: &[u32], skipping: &[u32]) -> (usize, usize) {
+    fn prefix(
+        &self,
+        fps: &[u64],
+        full: &[u32],
+        skipping: &[u32],
+        since: Option<f64>,
+    ) -> (usize, usize) {
         let held = fps
             .iter()
-            .take_while(|&&fp| full.iter().all(|&g| self.holds(g, fp)))
+            .take_while(|&&fp| full.iter().all(|&g| self.holds(g, fp, since)))
             .count();
         let reusable = (1..=held)
             .rev()
-            .find(|&k| skipping.iter().all(|&g| self.holds(g, fps[k - 1])))
+            .find(|&k| skipping.iter().all(|&g| self.holds(g, fps[k - 1], since)))
             .unwrap_or(0);
         (held, reusable)
     }
 }
 
-/// Match `events` against `calls`. Returns the summary and one line per
-/// analysed call.
+/// Match `events` against `calls`, whose `block_fps` were computed at
+/// `block_size` (`replay.kv_events.block_size`). Returns the summary and one
+/// line per analysed call.
 pub fn analyse(
     calls: &[CallLine],
     events: &[KvEventRecord],
+    block_size: usize,
 ) -> Result<(ResidencySummary, Vec<CallResidency>)> {
-    let mut sizes: HashMap<usize, u64> = HashMap::new();
-    for e in events.iter().filter(|e| e.kind == KvEventKind::Stored) {
-        *sizes.entry(e.block_size.unwrap_or(0)).or_default() += 1;
+    if block_size == 0 {
+        bail!("the block size must be greater than 0");
     }
-    let Some((&block_size, _)) = sizes.iter().max_by_key(|(_, n)| **n) else {
+    if !events.iter().any(|e| e.kind == KvEventKind::Stored) {
         bail!("the KV event log has no stored events");
-    };
+    }
 
     // Fingerprints by hash, from every stored event that determined one.
     let mut by_hash: HashMap<&str, u64> = HashMap::new();
@@ -203,7 +250,7 @@ pub fn analyse(
 
     let mut groups: BTreeMap<u32, GroupSummary> = BTreeMap::new();
     let mut changes: Vec<(f64, Change)> = Vec::new();
-    let mut removed_unknown = 0;
+    let (mut stored_unknown, mut removed_unknown) = (0, 0);
     for e in events {
         let g = e.group.unwrap_or(0);
         match e.kind {
@@ -216,8 +263,9 @@ pub fn analyse(
                     gs.skips_blocks = true;
                 }
                 for h in &e.hashes {
-                    if let Some(&fp) = by_hash.get(h.as_str()) {
-                        changes.push((e.t_ms, Change::Add(g, fp)));
+                    match by_hash.get(h.as_str()) {
+                        Some(&fp) => changes.push((e.t_ms, Change::Add(g, fp))),
+                        None => stored_unknown += 1,
                     }
                 }
             }
@@ -263,6 +311,18 @@ pub fn analyse(
     if analysed.is_empty() {
         bail!("the replay log has no successful non-warmup calls with block_fps");
     }
+    if let Some((c, fps)) = analysed.iter().find(|(c, fps)| {
+        c.rendered_tokens
+            .is_some_and(|r| r as usize / block_size != fps.len())
+    }) {
+        bail!(
+            "session {} call {}: {} block fingerprints for {} rendered tokens; the replay log was not written with block size {block_size}",
+            c.session_id,
+            c.call,
+            fps.len(),
+            c.rendered_tokens.unwrap_or(0)
+        );
+    }
 
     let mut queries: Vec<Query> = Vec::with_capacity(analysed.len() * 2);
     for (i, (c, _)) in analysed.iter().enumerate() {
@@ -291,24 +351,21 @@ pub fn analyse(
             let (t, c) = &changes[next];
             match c {
                 Change::Add(g, fp) => {
-                    *held.copies.entry((*g, *fp)).or_default() += 1;
+                    held.add(*g, *fp, *t);
                     if full.contains(g) {
                         held.first_stored.entry(*fp).or_insert(*t);
                     }
                 }
-                Change::Remove(g, fp) => {
-                    *held.copies.entry((*g, *fp)).or_default() -= 1;
-                }
+                Change::Remove(g, fp) => held.remove(*g, *fp),
                 Change::Clear => held.copies.clear(),
             }
             next += 1;
         }
-        let fps = &analysed[q.call].1;
-        let p = held.prefix(fps, &full, &skipping);
+        let (c, fps) = &analysed[q.call];
         if q.at_first_token {
-            at_first[q.call] = p;
+            at_first[q.call] = held.prefix(fps, &full, &skipping, Some(c.sent_ms));
         } else {
-            at_send[q.call] = p;
+            at_send[q.call] = held.prefix(fps, &full, &skipping, None);
             seen_before_send[q.call] = fps
                 .first()
                 .is_some_and(|fp| held.first_stored.contains_key(fp));
@@ -319,6 +376,7 @@ pub fn analyse(
     let mut summary = ResidencySummary {
         block_size,
         groups: groups.into_values().collect(),
+        stored_unknown,
         removed_unknown,
         calls: analysed.len(),
         calls_all_blocks_stored: 0,
@@ -385,11 +443,12 @@ fn console(s: &ResidencySummary) -> String {
         );
     }
     out += &format!(
-        "  removed blocks with no known fingerprint: {}\n\
+        "  blocks with no known fingerprint: {} stored, {} removed\n\
          \x20 calls: {} analysed, {} with every block stored by the server\n\
          \x20 calls reusing more than was reusable at send: {}\n\
-         \x20 calls reusing less than was reusable at first token: {}\n\
+         \x20 calls reusing less than was held from send to first token: {}\n\
          \x20 misses (reusable blocks in the trace, none reused): {}\n",
+        s.stored_unknown,
         s.removed_unknown,
         s.calls,
         s.calls_all_blocks_stored,
@@ -408,13 +467,14 @@ fn console(s: &ResidencySummary) -> String {
 pub fn run(
     replay_log: &Path,
     events_log: &Path,
+    block_size: usize,
     format: &str,
     output: Option<&Path>,
     calls_out: Option<&Path>,
 ) -> Result<()> {
     let calls: Vec<CallLine> = read_jsonl(replay_log)?;
     let events: Vec<KvEventRecord> = read_jsonl(events_log)?;
-    let (summary, lines) = analyse(&calls, &events)?;
+    let (summary, lines) = analyse(&calls, &events, block_size)?;
     if let Some(path) = calls_out {
         let f =
             std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
@@ -499,6 +559,7 @@ mod tests {
             warmup: false,
             sent_ms,
             ttft_ms: Some(ttft_ms),
+            rendered_tokens: Some(tokens.len() as u64),
             prompt_tokens: Some(tokens.len() as u64),
             cached_tokens: Some(cached),
             reuse: 4,
@@ -524,7 +585,7 @@ mod tests {
     }
 
     fn classes(calls: &[CallLine], log: &Log) -> (ResidencySummary, Vec<CallResidency>) {
-        analyse(calls, &log.events).unwrap()
+        analyse(calls, &log.events, BS).unwrap()
     }
 
     #[test]
@@ -617,8 +678,70 @@ mod tests {
         f.error = Some("x".to_string());
         let mut n = call(3, &PROMPT, 10.0, 1.0, 4);
         n.block_fps = None;
-        assert!(analyse(&[w.clone(), f.clone(), n.clone()], &log.events).is_err());
+        assert!(analyse(&[w.clone(), f.clone(), n.clone()], &log.events, BS).is_err());
         let (s, _) = classes(&[w, f, n, call(4, &PROMPT, 10.0, 1.0, 4)], &log);
         assert_eq!(s.calls, 1);
+    }
+
+    /// vLLM stores a call's prompt blocks when it schedules the call, before
+    /// its first token, so a prefix evicted before the send reads as held
+    /// again by then. Only a block held without a break since the send counts
+    /// at the first token.
+    #[test]
+    fn the_calls_own_store_does_not_count_as_held_at_first_token() {
+        let mut log = stored_prompt();
+        log.removed(50.0, 0, &["a", "b", "c"]);
+        log.removed(50.0, 1, &["b"]);
+        log.stored(101.0, 0, &["a", "b", "c"], None, &PROMPT);
+        log.stored(101.0, 1, &["b"], None, &PROMPT[..4]);
+        let mut queued = stored_prompt();
+        queued.removed(105.0, 0, &["a", "b", "c"]);
+        queued.stored(110.0, 0, &["a", "b", "c"], None, &PROMPT);
+        let (_, before) = classes(&[call(1, &PROMPT, 100.0, 30.0, 0)], &log);
+        let (_, during) = classes(&[call(1, &PROMPT, 100.0, 30.0, 0)], &queued);
+        assert_eq!(before[0].miss, Some(MissClass::EvictedBeforeSend));
+        assert_eq!(before[0].reusable_at_first_token, 0);
+        assert_eq!(during[0].miss, Some(MissClass::EvictedWhileQueued));
+    }
+
+    /// A removal whose store the capture did not see must not make a later
+    /// store read as absent.
+    #[test]
+    fn a_removal_without_a_store_does_not_go_below_zero() {
+        let mut log = Log::default();
+        log.stored(0.0, 0, &["a", "b", "c"], None, &PROMPT);
+        let fp_source = log.events.remove(0);
+        log.removed(10.0, 0, &["a", "b", "c"]);
+        log.stored(20.0, 0, &["a", "b", "c"], None, &PROMPT);
+        log.events.push(KvEventRecord {
+            t_ms: 500.0,
+            ..fp_source
+        });
+        let (_, lines) = classes(&[call(1, &PROMPT, 100.0, 1.0, 6)], &log);
+        assert_eq!(lines[0].held_prefix_at_send, 3);
+    }
+
+    #[test]
+    fn all_blocks_cleared_drops_every_held_block() {
+        let mut log = stored_prompt();
+        log.record(50.0, KvEventKind::Cleared, 0).group = None;
+        let (_, lines) = classes(&[call(1, &PROMPT, 100.0, 1.0, 0)], &log);
+        assert_eq!(lines[0].held_prefix_at_send, 0);
+        assert_eq!(lines[0].miss, Some(MissClass::EvictedBeforeSend));
+    }
+
+    #[test]
+    fn fingerprints_at_another_block_size_are_refused() {
+        let log = stored_prompt();
+        let err = analyse(&[call(1, &PROMPT, 10.0, 1.0, 4)], &log.events, 3).unwrap_err();
+        assert!(err.to_string().contains("block size 3"), "{err}");
+    }
+
+    #[test]
+    fn stored_blocks_with_no_fingerprint_are_counted() {
+        let mut log = stored_prompt();
+        log.stored(5.0, 0, &["x"], Some("never-seen"), &[7, 8]);
+        let (s, _) = classes(&[call(1, &PROMPT, 10.0, 1.0, 4)], &log);
+        assert_eq!(s.stored_unknown, 1);
     }
 }

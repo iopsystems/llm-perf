@@ -66,7 +66,7 @@ pub struct CallRecord {
     pub error: Option<String>,
     /// With `[replay.kv_events]`: the fingerprint of each full block of the
     /// rendered prompt, matching the `fps` of the KV event log.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub block_fps: Option<Vec<String>>,
 }
 
@@ -437,8 +437,15 @@ pub async fn run(mut config: Config) -> Result<()> {
         }
     }
     crate::metrics::RUNNING.store(false, Ordering::SeqCst);
+    // A failed capture is reported and the run's own report still written.
     let kv_events = match kv_capture {
-        Some(c) => Some(c.finish().await.context("capturing KV events")?),
+        Some(c) => match c.finish().await {
+            Ok(stats) => Some(stats),
+            Err(e) => {
+                warn!("capturing KV events: {e:#}");
+                None
+            }
+        },
         None => None,
     };
 
@@ -534,9 +541,12 @@ fn report(config: &Config, s: &ReplaySummary) -> Result<()> {
                     .map_or("-".to_string(), |v| format!("{:.4}", v)),
             ) + &s.kv_events.as_ref().map_or(String::new(), |k| {
                 format!(
-                    "\x20 kv events: {} batches ({} missed), {} stored, {} removed, {} cleared, {} with another block size\n",
+                    "\x20 kv events: {} batches (first seq {}, {} missed, {} undecoded, {} receive errors), {} stored, {} removed, {} cleared, {} with another block size\n",
                     k.batches,
+                    k.first_seq.map_or("-".to_string(), |s| s.to_string()),
                     k.batches_missed,
+                    k.batches_undecoded,
+                    k.receive_errors,
                     k.stored_events,
                     k.removed_events,
                     k.cleared_events,

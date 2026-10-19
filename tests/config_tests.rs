@@ -160,6 +160,45 @@ fn replay_server_selects_vllm_and_rejects_unknown() {
 }
 
 #[test]
+fn replay_kv_events_needs_vllm_a_call_log_and_its_own_file() {
+    let kv = |log: &str, block_size: u32| {
+        format!(
+            "\n[replay.kv_events]\nendpoint = \"tcp://127.0.0.1:5557\"\nblock_size = {block_size}\nlog = \"{log}\"\n"
+        )
+    };
+    let ok = replay_toml(&format!(
+        "server = \"vllm\"\nlog = \"r.jsonl\"{}",
+        kv("kv.jsonl", 528)
+    ));
+    let cfg = Config::from_toml(&ok).unwrap();
+    let k = cfg.replay.unwrap().kv_events.unwrap();
+    assert_eq!((k.block_size, k.topic.as_str()), (528, ""));
+    for (extra, needle) in [
+        (
+            format!("log = \"r.jsonl\"{}", kv("kv.jsonl", 528)),
+            "requires replay.server",
+        ),
+        (
+            format!("server = \"vllm\"{}", kv("kv.jsonl", 528)),
+            "requires replay.log",
+        ),
+        (
+            format!("server = \"vllm\"\nlog = \"r.jsonl\"{}", kv("kv.jsonl", 0)),
+            "block_size must be greater than 0",
+        ),
+        (
+            format!("server = \"vllm\"\nlog = \"r.jsonl\"{}", kv("r.jsonl", 528)),
+            "must differ from replay.log",
+        ),
+    ] {
+        let err = Config::from_toml(&replay_toml(&extra))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(needle), "{extra}: {err}");
+    }
+}
+
+#[test]
 fn replay_accepts_duration_and_warmup_from_load() {
     let toml = format!(
         "{}\n[load]\nduration_seconds = 600\nwarmup_duration = 60\n",

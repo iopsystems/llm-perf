@@ -301,8 +301,13 @@ blocks the server removed. Start vLLM with
 --kv-events-config '{"enable_kv_cache_events": true, "publisher": "zmq", "endpoint": "tcp://*:5557"}'
 ```
 
-vLLM binds the endpoint only when it has a wildcard host (`*`); with any
-other host it connects to it. Then set
+vLLM binds the endpoint when it contains `*` or `::`, or is `ipc://` or
+`inproc://`, and otherwise connects to it. Replay connects, so give vLLM a
+bind endpoint such as `tcp://*:5557`. With a connect endpoint nothing binds,
+and the run fails when replay's connect times out (30 s). Only one vLLM
+publisher is read: with data parallelism, each rank publishes on its own
+port. Start vLLM fresh, or reset its prefix cache, before a captured run;
+blocks stored before the capture have no fingerprint. Then set
 
 ```toml
 [replay.kv_events]
@@ -311,27 +316,42 @@ block_size = 528          # the server's prefix-cache block size in tokens
 log = "kv-events.jsonl"
 ```
 
-`block_size` must be the block size vLLM reports in its stored events; the
-summary counts stored events with another size (`block_size_mismatch`). Each
-line of the event log is one `stored`, `removed` or `cleared` event with the
-time replay received it (`t_ms`, on the per-call log's clock), the batch
-sequence number, the KV cache group, the block hashes and, for stored blocks,
-a fingerprint of the prefix each block ends (`fps`). Each line of the per-call
-log gains `block_fps`, the fingerprint of each full block of the rendered
-prompt. The summary reports batches received and the sequence numbers skipped
-(`batches_missed`); vLLM drops events when its publish queue is full.
+`block_size` must be the block size vLLM reports in its stored events. The
+summary counts stored events with another size (`block_size_mismatch`),
+which also counts events for blocks that are not full yet. Each line of the
+event log is one `stored`, `removed` or `cleared` event with the time replay
+received it (`t_ms`, on the per-call log's clock), the batch sequence number,
+the KV cache group, the block hashes and, for stored blocks, a fingerprint of
+the prefix each block ends (`fps`). Each line of the per-call log gains
+`block_fps`, the fingerprint of each full block of the rendered prompt.
 
-`llm-perf kv-residency replay.jsonl kv-events.jsonl` replays the event log
-against the calls. For each successful non-warmup call it finds how many
-leading prompt blocks the server held when the call was sent and at its first
-token, and how many of those it could have reused: in a hybrid model with
-"align" prefix caching, a prefix of `k` blocks also needs the Mamba state at
-block `k`. It checks that every call's blocks appear in a stored event,
-counts calls whose reported cached blocks exceed what was held at send, and
-sorts calls with traced reuse and no cached tokens by when their prefix went:
-never stored, removed before the call was sent (attention blocks, or only the
-Mamba state), removed while the call was queued, or still held at the first
-token. `--calls-out` writes one line per call.
+The summary reports batches received, the first sequence number received
+(`first_seq`; vLLM numbers batches from 0 when it starts), sequence numbers
+skipped after it (`batches_missed`), batches that could not be decoded, and
+receive errors. vLLM's PUB socket drops batches for a subscriber whose queue
+has reached its high-water mark (`hwm`, 100000 by default), and a batch whose
+send fails leaves a gap. The analysis assumes vLLM's default
+`kv_cache_report_mode`, `incremental`, in which a stored event means a block
+was added to the cache.
+
+`llm-perf kv-residency replay.jsonl kv-events.jsonl --block-size 528` replays
+the event log against the calls; `--block-size` is the `block_size` the run
+used. For each successful non-warmup call it finds how many leading prompt
+blocks the server held when the call was sent, and how many of those it
+could have reused. A group whose stored events skip blocks (Mamba groups in
+"align" prefix caching, and sliding-window groups) counts a prefix of `k`
+blocks as reusable when it holds the state at the end of block `k`; that is
+right for Mamba groups and overstates what a sliding-window group can serve.
+vLLM stores a call's prompt blocks when it schedules the call, so at the
+call's first token only blocks held without a break since the send count.
+
+It checks that every call's blocks appear in a stored event, counts stored
+blocks with no fingerprint and calls whose reported cached blocks exceed what
+was reusable at send, and classifies calls with traced reuse and no cached
+tokens by when their prefix was removed: never stored, removed before the
+call was sent (attention blocks, or only the Mamba state), removed between
+the send and the first token, or held without a break from the send to the
+first token. `--calls-out` writes one line per call.
 
 ### Configuration
 
