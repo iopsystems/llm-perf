@@ -223,6 +223,27 @@ pub struct ReplayConfig {
     /// Per-call JSONL log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<PathBuf>,
+    /// Record vLLM's KV cache events during the run. Requires `server =
+    /// "vllm"` and `log`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_events: Option<KvEventsConfig>,
+}
+
+/// `[replay.kv_events]`: where vLLM publishes KV cache events
+/// (`--kv-events-config`) and where replay writes them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KvEventsConfig {
+    /// ZMQ endpoint vLLM publishes on, e.g. `tcp://127.0.0.1:5557`.
+    pub endpoint: String,
+    /// Topic vLLM publishes with; vLLM's default is empty.
+    #[serde(default)]
+    pub topic: String,
+    /// The server's prefix-cache block size in tokens. Each call's log line
+    /// carries a fingerprint of each full block of its prompt at this size.
+    pub block_size: usize,
+    /// JSONL file the events are written to.
+    pub log: PathBuf,
 }
 
 /// Server types replay can render and tokenize prompts against.
@@ -1079,6 +1100,19 @@ impl Config {
                 "replay.speedup must be a positive number, got {}",
                 replay.speedup
             );
+        }
+        if let Some(kv) = &replay.kv_events {
+            if replay.server != ReplayServer::Vllm {
+                anyhow::bail!("replay.kv_events requires replay.server = \"vllm\"");
+            }
+            if replay.log.is_none() {
+                anyhow::bail!(
+                    "replay.kv_events requires replay.log; the events are matched to the calls in it"
+                );
+            }
+            if kv.block_size == 0 {
+                anyhow::bail!("replay.kv_events.block_size must be greater than 0");
+            }
         }
         if self.endpoint.max_tokens.is_some() {
             anyhow::bail!(

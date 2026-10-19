@@ -27,6 +27,7 @@ A high-performance benchmarking tool for OpenAI-compatible LLM inference servers
 - **`logprobs`** - Collect token-level log probabilities sequentially (one request at a time to avoid GPU batching effects on distributions)
 - **`kl-divergence`** - Compare token probability distributions between two logprob captures (e.g., baseline FP16 vs quantized model)
 - **`convert-trace`** - Convert the coding-agent session dataset from [Azure/AzurePublicDataset](https://github.com/Azure/AzurePublicDataset/blob/master/GitHubCopilotCodingAgentDataset2026.md) into a per-session replay trace
+- **`kv-residency`** - Match a trace replay's per-call log against the vLLM KV cache events recorded with it (see [KV cache events](#kv-cache-events-vllm))
 
 ### Performance Metrics
 
@@ -289,6 +290,47 @@ server type, build and per-request context.
 Filler is fixed by `seed`, the session id and the call index, so a second run
 against a server that still holds the first run's prompts gets cache hits on
 first calls; restart the server or change `seed` between runs.
+
+#### KV cache events (vLLM)
+
+With `[replay.kv_events]`, replay subscribes to the KV cache events vLLM
+publishes and writes them to a log, so cache misses can be traced to the
+blocks the server removed. Start vLLM with
+
+```bash
+--kv-events-config '{"enable_kv_cache_events": true, "publisher": "zmq", "endpoint": "tcp://*:5557"}'
+```
+
+and set
+
+```toml
+[replay.kv_events]
+endpoint = "tcp://127.0.0.1:5557"
+block_size = 528          # the server's prefix-cache block size in tokens
+log = "kv-events.jsonl"
+```
+
+`block_size` must be the block size vLLM reports in its stored events; the
+summary counts stored events with another size (`block_size_mismatch`). Each
+line of the event log is one `stored`, `removed` or `cleared` event with the
+time replay received it (`t_ms`, on the per-call log's clock), the batch
+sequence number, the KV cache group, the block hashes and, for stored blocks,
+a fingerprint of the prefix each block ends (`fps`). Each line of the per-call
+log gains `block_fps`, the fingerprint of each full block of the rendered
+prompt. The summary reports batches received and the sequence numbers skipped
+(`batches_missed`); vLLM drops events when its publish queue is full.
+
+`llm-perf kv-residency replay.jsonl kv-events.jsonl` replays the event log
+against the calls. For each successful non-warmup call it finds how many
+leading prompt blocks the server held when the call was sent and at its first
+token, and how many of those it could have reused: in a hybrid model with
+"align" prefix caching, a prefix of `k` blocks also needs the Mamba state at
+block `k`. It checks that every call's blocks appear in a stored event,
+counts calls whose reported cached blocks exceed what was held at send, and
+sorts calls with traced reuse and no cached tokens by when their prefix went:
+never stored, removed before the call was sent (attention blocks, or only the
+Mamba state), removed while the call was queued, or still held at the first
+token. `--calls-out` writes one line per call.
 
 ### Configuration
 

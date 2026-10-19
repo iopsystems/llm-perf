@@ -57,6 +57,19 @@ fn main() -> Result<()> {
                 threads.unwrap_or_else(num_cpus::get),
             )
         }
+        Command::KvResidency {
+            ref replay_log,
+            ref events_log,
+            ref format,
+            ref output,
+            ref calls_out,
+        } => llm_perf::replay::kv_residency::run(
+            replay_log,
+            events_log,
+            format,
+            output.as_deref(),
+            calls_out.as_deref(),
+        ),
     }
 }
 

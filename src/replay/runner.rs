@@ -2,6 +2,7 @@
 //! timeline, send each call, and record what the server cached.
 
 use super::filler::{FillerPool, call_rng};
+use super::kv_events::{KvCapture, KvEventStats, block_fingerprints, fp_hex};
 use super::prompt::SessionPrompt;
 use super::render::ServerRenderer;
 use super::sample::selected;
@@ -63,6 +64,10 @@ pub struct CallRecord {
     pub ttft_ms: Option<f64>,
     pub e2e_ms: Option<f64>,
     pub error: Option<String>,
+    /// With `[replay.kv_events]`: the fingerprint of each full block of the
+    /// rendered prompt, matching the `fps` of the KV event log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_fps: Option<Vec<String>>,
 }
 
 /// Totals printed or written at the end of a run. `calls_sent`,
@@ -110,6 +115,9 @@ pub struct ReplaySummary {
     pub ttft_ms_p50: Option<f64>,
     pub ttft_ms_p99: Option<f64>,
     pub prompt_size_error_median: Option<f64>,
+    /// With `[replay.kv_events]`: what the event capture received.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kv_events: Option<KvEventStats>,
 }
 
 #[derive(Default)]
@@ -381,6 +389,10 @@ pub async fn run(mut config: Config) -> Result<()> {
 
     let t0 = sessions.iter().map(|s| s.start_ms).min().unwrap_or(0);
     let start = Instant::now();
+    let kv_capture = match &replay.kv_events {
+        Some(kv) => Some(KvCapture::start(kv, start).await?),
+        None => None,
+    };
     let shared = Arc::new(Shared {
         client,
         renderer,
@@ -425,6 +437,10 @@ pub async fn run(mut config: Config) -> Result<()> {
         }
     }
     crate::metrics::RUNNING.store(false, Ordering::SeqCst);
+    let kv_events = match kv_capture {
+        Some(c) => Some(c.finish().await.context("capturing KV events")?),
+        None => None,
+    };
 
     // Close the log channel so the writer finishes.
     let shared = Arc::into_inner(shared).context("a session task outlived the run")?;
@@ -465,6 +481,7 @@ pub async fn run(mut config: Config) -> Result<()> {
         ttft_ms_p50: percentile(&mut st.ttft_ms, 50.0),
         ttft_ms_p99: percentile(&mut st.ttft_ms, 99.0),
         prompt_size_error_median: percentile(&mut st.size_errors, 50.0),
+        kv_events,
     };
     report(&config, &summary)
 }
@@ -515,7 +532,17 @@ fn report(config: &Config, s: &ReplaySummary) -> Result<()> {
                 f(s.ttft_ms_p99),
                 s.prompt_size_error_median
                     .map_or("-".to_string(), |v| format!("{:.4}", v)),
-            )
+            ) + &s.kv_events.as_ref().map_or(String::new(), |k| {
+                format!(
+                    "\x20 kv events: {} batches ({} missed), {} stored, {} removed, {} cleared, {} with another block size\n",
+                    k.batches,
+                    k.batches_missed,
+                    k.stored_events,
+                    k.removed_events,
+                    k.cleared_events,
+                    k.block_size_mismatch,
+                )
+            })
         }
     };
     match &config.output.file {
@@ -567,6 +594,7 @@ async fn run_session(sh: Arc<Shared>, s: TraceSession, offset: Duration) -> Outc
                 ttft_ms: None,
                 e2e_ms: None,
                 error: None,
+                block_fps: None,
             };
 
             let mut rng = call_rng(sh.replay.seed, &s.session_id, i);
@@ -589,6 +617,14 @@ async fn run_session(sh: Arc<Shared>, s: TraceSession, offset: Duration) -> Outc
                 }
             };
             record.rendered_tokens = Some(built.prompt_tokens as u64);
+            if let Some(kv) = &sh.replay.kv_events {
+                record.block_fps = Some(
+                    block_fingerprints(prompt.rendered(), kv.block_size)
+                        .into_iter()
+                        .map(fp_hex)
+                        .collect(),
+                );
+            }
             record.shortfall = built.shortfall as u64;
             record.overshoot = built.overshoot;
 
@@ -800,6 +836,7 @@ mod tests {
             ttft_ms: None,
             e2e_ms: None,
             error: None,
+            block_fps: None,
         }
     }
 

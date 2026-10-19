@@ -135,6 +135,24 @@ pub enum Command {
         #[arg(long)]
         threads: Option<usize>,
     },
+    /// Match a replay log against the vLLM KV event log recorded with it
+    /// (replay.kv_events): which prompt blocks the server held when each call
+    /// was sent and at its first token
+    KvResidency {
+        /// Per-call replay log (replay.log)
+        replay_log: PathBuf,
+        /// KV event log (replay.kv_events.log)
+        events_log: PathBuf,
+        /// Output format: "console" or "json"
+        #[arg(long, default_value = "console")]
+        format: String,
+        /// Output file path (writes to stdout if omitted)
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Write one JSON line per analysed call to this file
+        #[arg(long)]
+        calls_out: Option<PathBuf>,
+    },
 }
 
 impl Cli {
@@ -154,6 +172,7 @@ impl Cli {
                     | "mmlu-pro"
                     | "generate-prompts"
                     | "convert-trace"
+                    | "kv-residency"
                     | "help"
                     | "--help"
                     | "-h"

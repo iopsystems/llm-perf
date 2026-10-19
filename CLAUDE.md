@@ -51,7 +51,7 @@ cargo clippy
 - `Cargo.toml` - Project manifest with dependencies (one binary, llm-perf)
 - `src/main.rs` - Entry point, CLI dispatch, tokio runtime and logging setup
 - `src/lib.rs` - Library root that exports public modules
-- `src/cli.rs` - Command-line interface using clap (bench, logprobs, kl-divergence, mmlu-pro, generate-prompts, convert-trace subcommands)
+- `src/cli.rs` - Command-line interface using clap (bench, logprobs, kl-divergence, mmlu-pro, generate-prompts, convert-trace, kv-residency subcommands)
 - `src/config.rs` - Configuration structures with TOML parsing
 - `src/benchmark.rs` - Core benchmarking engine (concurrent and QPS modes)
 - `src/client.rs` - OpenAI-compatible HTTP client with SSE streaming, retries, model detection
@@ -66,7 +66,7 @@ cargo clippy
 - `src/logprobs.rs` - Log probability collection and JSONL writer
 - `src/kl_divergence.rs` - KL divergence computation between logprob captures
 - `src/trace.rs` - `convert-trace`: coding-agent session dataset to per-session replay trace
-- `src/replay/` - Trace replay (`[replay]` config): session sampling, scaled schedule, filler, prompt construction against llama-server or vLLM, server probing, runner
+- `src/replay/` - Trace replay (`[replay]` config): session sampling, scaled schedule, filler, prompt construction against llama-server or vLLM, server probing, runner, vLLM KV event capture, and the `kv-residency` subcommand
 - `src/mmlu_pro/` - MMLU-Pro accuracy evaluation (`mmlu-pro` subcommand)
 - `examples/config.example.toml` - Comprehensive configuration reference
 

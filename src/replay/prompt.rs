@@ -53,6 +53,11 @@ pub struct SessionPrompt {
 }
 
 impl SessionPrompt {
+    /// Tokens of the prompt the last `build` rendered.
+    pub fn rendered(&self) -> &[u32] {
+        &self.rendered
+    }
+
     /// Build the next call. `system` is kept whole at the start of every call.
     pub async fn build<R: Renderer>(
         &mut self,
