@@ -1113,7 +1113,10 @@ impl Config {
             if kv.block_size == 0 {
                 anyhow::bail!("replay.kv_events.block_size must be greater than 0");
             }
-            if replay.log.as_ref() == Some(&kv.log) {
+            let same = |a: &std::path::Path, b: &std::path::Path| {
+                std::path::absolute(a).ok() == std::path::absolute(b).ok()
+            };
+            if replay.log.as_deref().is_some_and(|l| same(l, &kv.log)) {
                 anyhow::bail!("replay.kv_events.log must differ from replay.log");
             }
         }

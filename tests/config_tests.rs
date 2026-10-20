@@ -190,6 +190,13 @@ fn replay_kv_events_needs_vllm_a_call_log_and_its_own_file() {
             format!("server = \"vllm\"\nlog = \"r.jsonl\"{}", kv("r.jsonl", 528)),
             "must differ from replay.log",
         ),
+        (
+            format!(
+                "server = \"vllm\"\nlog = \"r.jsonl\"{}",
+                kv("./r.jsonl", 528)
+            ),
+            "must differ from replay.log",
+        ),
     ] {
         let err = Config::from_toml(&replay_toml(&extra))
             .unwrap_err()

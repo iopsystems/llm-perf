@@ -8,10 +8,10 @@
 //! the per-call log.
 //!
 //! Blocks are identified by vLLM's block hash, which is the same in every KV
-//! cache group that has the same block size, for the same prefix. Replay adds a fingerprint of the prefix a
-//! block covers, computed from the block's token ids with
-//! [`block_fingerprints`], so the blocks can be matched to the calls whose
-//! prompts contain them.
+//! cache group that has the same block size, for the same prefix. Replay adds
+//! a fingerprint of the prefix a block covers, computed from the block's token
+//! ids with [`block_fingerprints`], so the blocks can be matched to the calls
+//! whose prompts contain them.
 
 use crate::config::KvEventsConfig;
 use anyhow::{Context, Result, bail};
@@ -82,10 +82,16 @@ pub enum KvEvent {
         token_ids: Vec<u32>,
         block_size: usize,
         group: u32,
+        /// The group's KV cache spec kind (`kv_cache_spec_kind`), such as
+        /// `full_attention` or `mamba`, where vLLM sends it.
+        spec_kind: Option<String>,
+        /// `GPU`, `CPU` or `STORAGE`, where vLLM sends it.
+        medium: Option<String>,
     },
     Removed {
         hashes: Vec<String>,
         group: u32,
+        medium: Option<String>,
     },
     Cleared,
 }
@@ -98,8 +104,8 @@ pub struct KvBatch {
     pub events: Vec<KvEvent>,
 }
 
-/// vLLM sends block hashes as bytes (SHA-256, the default) or as integers
-/// (`VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES`).
+/// vLLM sends block hashes as integers (the low 64 bits of the hash, the
+/// default) or, with `VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES=0`, as bytes.
 fn hash_text(v: &Value) -> Result<String> {
     match v {
         Value::Binary(b) => Ok(b.iter().map(|x| format!("{x:02x}")).collect()),
@@ -130,6 +136,10 @@ fn group(map: &[(Value, Value)]) -> u32 {
     field(map, "group_idx").and_then(Value::as_u64).unwrap_or(0) as u32
 }
 
+fn text(map: &[(Value, Value)], name: &str) -> Option<String> {
+    field(map, name).and_then(Value::as_str).map(str::to_string)
+}
+
 fn decode_event(v: &Value) -> Result<Option<KvEvent>> {
     let map = v.as_map().context("event is not a map")?;
     let kind = field(map, "type")
@@ -149,10 +159,13 @@ fn decode_event(v: &Value) -> Result<Option<KvEvent>> {
                 .and_then(Value::as_u64)
                 .context("BlockStored has no block_size")? as usize,
             group: group(map),
+            spec_kind: text(map, "kv_cache_spec_kind"),
+            medium: text(map, "medium"),
         },
         "BlockRemoved" => KvEvent::Removed {
             hashes: hashes(map)?,
             group: group(map),
+            medium: text(map, "medium"),
         },
         "AllBlocksCleared" => KvEvent::Cleared,
         _ => return Ok(None),
@@ -214,6 +227,12 @@ pub struct KvEventRecord {
     /// another event already gave the same hash a fingerprint.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fps: Vec<Option<String>>,
+    /// The group's KV cache spec kind, from stored events that carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_kind: Option<String>,
+    /// The storage medium, where vLLM sends it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medium: Option<String>,
 }
 
 /// Fingerprints by block hash, learned from stored events.
@@ -273,6 +292,11 @@ pub struct KvEventStats {
     /// Sequence numbers skipped after the first batch received: batches the
     /// publisher numbered that replay did not receive.
     pub batches_missed: u64,
+    /// Batches whose sequence number was not above the previous one's, as
+    /// when the server restarts. Each is written to the log as a `cleared`
+    /// event before the batch's own events, since a restarted server holds
+    /// no blocks.
+    pub seq_resets: u64,
     /// Batches received that could not be decoded; their events are not in
     /// the log.
     pub batches_undecoded: u64,
@@ -282,6 +306,23 @@ pub struct KvEventStats {
     /// `replay.kv_events.block_size`. Partial-block events (a block that is
     /// not full yet) count here.
     pub block_size_mismatch: u64,
+}
+
+fn cleared(t_ms: f64, seq: u64) -> KvEventRecord {
+    KvEventRecord {
+        t_ms,
+        seq,
+        ts: 0.0,
+        kind: KvEventKind::Cleared,
+        group: None,
+        hashes: Vec::new(),
+        parent: None,
+        block_size: None,
+        n_tokens: None,
+        fps: Vec::new(),
+        spec_kind: None,
+        medium: None,
+    }
 }
 
 fn records(
@@ -307,6 +348,8 @@ fn records(
                 block_size: None,
                 n_tokens: None,
                 fps: Vec::new(),
+                spec_kind: None,
+                medium: None,
             };
             match e {
                 KvEvent::Stored {
@@ -315,6 +358,8 @@ fn records(
                     token_ids,
                     block_size: bs,
                     group,
+                    spec_kind,
+                    medium,
                 } => {
                     stats.stored_events += 1;
                     stats.block_size_mismatch += (bs != block_size) as u64;
@@ -329,12 +374,19 @@ fn records(
                     r.parent = parent;
                     r.block_size = Some(bs);
                     r.n_tokens = Some(token_ids.len());
+                    r.spec_kind = spec_kind;
+                    r.medium = medium;
                 }
-                KvEvent::Removed { hashes, group } => {
+                KvEvent::Removed {
+                    hashes,
+                    group,
+                    medium,
+                } => {
                     stats.removed_events += 1;
                     r.kind = KvEventKind::Removed;
                     r.group = Some(group);
                     r.hashes = hashes;
+                    r.medium = medium;
                 }
                 KvEvent::Cleared => stats.cleared_events += 1,
             }
@@ -438,10 +490,16 @@ async fn receive(
             warn!("KV events: sequence frame of {} bytes", seq.len());
             continue;
         };
-        if let Some(last) = last_seq
-            && seq > last + 1
-        {
-            stats.batches_missed += seq - last - 1;
+        match last_seq {
+            Some(last) if seq > last + 1 => stats.batches_missed += seq - last - 1,
+            Some(last) if seq <= last => {
+                stats.seq_resets += 1;
+                warn!(
+                    "KV events: sequence number {seq} after {last}; treating as a server restart"
+                );
+                let _ = tx.send(vec![cleared(t_ms, seq)]);
+            }
+            _ => {}
         }
         last_seq = Some(seq);
         stats.first_seq.get_or_insert(seq);
@@ -501,6 +559,7 @@ mod tests {
             ("medium", Value::from("GPU")),
             ("lora_name", Value::Nil),
             ("group_idx", Value::from(1)),
+            ("kv_cache_spec_kind", Value::from("mamba")),
         ]);
         let removed = v_map(vec![
             ("type", Value::from("BlockRemoved")),
@@ -524,10 +583,13 @@ mod tests {
                     token_ids: vec![1, 2, 3, 4],
                     block_size: 2,
                     group: 1,
+                    spec_kind: Some("mamba".to_string()),
+                    medium: Some("GPU".to_string()),
                 },
                 KvEvent::Removed {
                     hashes: vec!["7".to_string()],
                     group: 0,
+                    medium: Some("GPU".to_string()),
                 },
                 KvEvent::Cleared,
             ]
@@ -602,9 +664,10 @@ mod tests {
             Value::from(1.0),
             Value::Array(vec![stored]),
         ]));
-        // The subscription reaches the publisher asynchronously; publish
-        // until the capture has had time to receive.
-        for seq in [0u64, 0, 0, 3] {
+        // The subscription reaches the publisher asynchronously, so the
+        // first batches may be lost; 0..=2 leaves the count of missed batches
+        // the same whichever of them arrives first. The final 0 is a restart.
+        for seq in [0u64, 1, 2, 5, 0] {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let mut m = ZmqMessage::from(Vec::<u8>::new());
             m.push_back(seq.to_be_bytes().to_vec().into());
@@ -614,8 +677,22 @@ mod tests {
         let stats = capture.finish().await.unwrap();
         assert!(stats.batches >= 2, "{stats:?}");
         assert_eq!(stats.batches_missed, 2);
+        assert_eq!(stats.seq_resets, 1);
         let text = std::fs::read_to_string(&config.log).unwrap();
-        let first: KvEventRecord = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        let lines: Vec<KvEventRecord> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let kinds: Vec<_> = lines[lines.len() - 3..].iter().map(|r| r.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                KvEventKind::Stored,
+                KvEventKind::Cleared,
+                KvEventKind::Stored
+            ]
+        );
+        let first = &lines[0];
         assert_eq!(first.kind, KvEventKind::Stored);
         assert_eq!(first.hashes, vec!["01".to_string()]);
         assert_eq!(

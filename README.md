@@ -321,14 +321,22 @@ summary counts stored events with another size (`block_size_mismatch`),
 which also counts events for blocks that are not full yet. Each line of the
 event log is one `stored`, `removed` or `cleared` event with the time replay
 received it (`t_ms`, on the per-call log's clock), the batch sequence number,
-the KV cache group, the block hashes and, for stored blocks, a fingerprint of
-the prefix each block ends (`fps`). Each line of the per-call log gains
-`block_fps`, the fingerprint of each full block of the rendered prompt.
+the KV cache group, the block hashes, the group's spec kind and the storage
+medium where vLLM sends them, and, for stored blocks, a fingerprint of the
+prefix each block ends (`fps`). A fingerprint is `null` where the event alone
+does not determine it; `kv-residency` fills these from other events with the
+same hash. Each line of the per-call log gains `block_fps`, the fingerprint of
+each full block of the rendered prompt. Events are published after the
+engine step in which the blocks changed, so `t_ms` can trail the change by up
+to one step, and `kv-residency` can then count a removal made just before a
+call's send as made while the call was queued.
 
 The summary reports batches received, the first sequence number received
 (`first_seq`; vLLM numbers batches from 0 when it starts), sequence numbers
-skipped after it (`batches_missed`), batches that could not be decoded, and
-receive errors. vLLM's PUB socket drops batches for a subscriber whose queue
+skipped after it (`batches_missed`), batches whose sequence number was not
+above the previous one's (`seq_resets`), batches that could not be decoded,
+and receive errors. A sequence reset means the server restarted and holds no
+blocks, so the log gets a `cleared` event before that batch. vLLM's PUB socket drops batches for a subscriber whose queue
 has reached its high-water mark (`hwm`, 100000 by default), and a batch whose
 send fails leaves a gap. The analysis assumes vLLM's default
 `kv_cache_report_mode`, `incremental`, in which a stored event means a block
@@ -338,18 +346,22 @@ was added to the cache.
 the event log against the calls; `--block-size` is the `block_size` the run
 used. For each successful non-warmup call it finds how many leading prompt
 blocks the server held when the call was sent, and how many of those it
-could have reused. A group whose stored events skip blocks (Mamba groups in
-"align" prefix caching, and sliding-window groups) counts a prefix of `k`
-blocks as reusable when it holds the state at the end of block `k`; that is
-right for Mamba groups and overstates what a sliding-window group can serve.
+could have reused. Only events for GPU blocks count. A Mamba group (spec kind
+`mamba`, or, in events without a spec kind, one whose stored events skip
+blocks, as in "align" prefix caching) counts a prefix of `k` blocks as
+reusable when it holds the state at the end of the prefix's last block. A
+prompt of exactly `k` blocks can reuse at most `k - 1`, since vLLM recomputes
+the last token. Event logs with a sliding-window or other group kind are
+refused. Calls without a first-token time are not analysed.
 vLLM stores a call's prompt blocks when it schedules the call, so at the
 call's first token only blocks held without a break since the send count.
 
 It checks that every call's blocks appear in a stored event, counts stored
 blocks with no fingerprint and calls whose reported cached blocks exceed what
 was reusable at send, and classifies calls with traced reuse and no cached
-tokens by when their prefix was removed: never stored, attention blocks held
-but no Mamba state ever stored at the end of a held prefix, removed before
+tokens by whether and when their prefix was stored and removed: never
+stored, attention blocks held but the state at the end of no held prefix
+stored by every Mamba group, removed before
 the call was sent (attention blocks, or only the Mamba state), removed
 between the send and the first token, or held without a break from the send
 to the first token. `--calls-out` writes one line per call.

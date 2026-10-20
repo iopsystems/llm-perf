@@ -3,13 +3,16 @@
 //! the KV event log recorded with it (`[replay.kv_events]`).
 //!
 //! A block is held while the server has stored more copies of its hash than
-//! it has removed. Each KV cache group is tracked separately. A group whose
-//! stored events cover more tokens than their blocks skips blocks: Mamba
-//! groups in vLLM's "align" prefix caching, and sliding-window groups. A
-//! prefix of `k` blocks counts as reusable if every other group holds blocks
-//! `0..k` and every skipping group holds block `k - 1`, the state at the end
-//! of the prefix. That rule is right for Mamba groups and overstates what a
-//! sliding-window group can serve.
+//! it has removed. Each KV cache group is tracked separately, and only events
+//! for GPU blocks count. A Mamba group skips blocks: in vLLM's "align" prefix
+//! caching it stores the state at only some block boundaries. A group is a
+//! Mamba group when its stored events name the `mamba` spec kind, or, in
+//! events without a spec kind, when they cover more tokens than their blocks.
+//! A prefix of `k` blocks (0-based blocks `0..k`) counts as reusable if every
+//! other group holds blocks `0..k` and every skipping group holds block
+//! `k - 1`, the state at the end of the prefix. vLLM never reuses a prompt's
+//! last token, so a prompt of exactly `k` blocks can reuse at most `k - 1`.
+//! Event logs with a sliding-window or other group kind are refused.
 //!
 //! vLLM stores a call's prompt blocks when it schedules the call, before its
 //! first token. At the first token, a block counts as held only if it has
@@ -54,9 +57,9 @@ pub enum MissClass {
     /// Stored earlier, and no reusable prefix was held when the call was
     /// sent because the attention blocks were removed.
     EvictedBeforeSend,
-    /// Stored earlier; the attention blocks were held when the call was sent
-    /// but no skipping group had ever stored the state at the end of any held
-    /// prefix.
+    /// Stored earlier; the attention blocks were held when the call was sent,
+    /// and for no held prefix had every skipping group stored the state at
+    /// its end.
     StateNeverStored,
     /// Stored earlier; the attention blocks were held when the call was sent,
     /// and the state at the end of a held prefix had been stored but was no
@@ -99,6 +102,8 @@ pub struct CallResidency {
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupSummary {
     pub group: u32,
+    /// The spec kind the group's stored events name, if any.
+    pub spec_kind: Option<String>,
     pub skips_blocks: bool,
     pub stored_blocks: u64,
     pub removed_blocks: u64,
@@ -114,7 +119,10 @@ pub struct ResidencySummary {
     pub stored_unknown: u64,
     /// Removed blocks whose hash no stored event gave a fingerprint.
     pub removed_unknown: u64,
-    /// Successful non-warmup calls with block fingerprints.
+    /// Stored and removed events for a medium other than the GPU, which are
+    /// not counted as held.
+    pub events_other_medium: u64,
+    /// Successful non-warmup calls with block fingerprints and a first token.
     pub calls: usize,
     /// Of those, calls whose every full block appears in a stored event with
     /// a known fingerprint. A call is missing from this count when the
@@ -154,6 +162,7 @@ fn parse_fp(s: &str) -> Result<u64> {
 fn group(groups: &mut BTreeMap<u32, GroupSummary>, g: u32) -> &mut GroupSummary {
     groups.entry(g).or_insert(GroupSummary {
         group: g,
+        spec_kind: None,
         skips_blocks: false,
         stored_blocks: 0,
         removed_blocks: 0,
@@ -211,19 +220,21 @@ impl Held {
     }
 
     /// Leading blocks every group in `full` holds, and the longest of those
-    /// prefixes whose last block every group in `skipping` holds.
+    /// prefixes, at most `max_reusable` blocks, whose last block every group
+    /// in `skipping` holds.
     fn prefix(
         &self,
         fps: &[u64],
         full: &[u32],
         skipping: &[u32],
         since: Option<f64>,
+        max_reusable: usize,
     ) -> (usize, usize) {
         let held = fps
             .iter()
             .take_while(|&&fp| full.iter().all(|&g| self.holds(g, fp, since)))
             .count();
-        let reusable = (1..=held)
+        let reusable = (1..=held.min(max_reusable))
             .rev()
             .find(|&k| skipping.iter().all(|&g| self.holds(g, fps[k - 1], since)))
             .unwrap_or(0);
@@ -268,17 +279,31 @@ pub fn analyse(
 
     let mut groups: BTreeMap<u32, GroupSummary> = BTreeMap::new();
     let mut changes: Vec<(f64, Change)> = Vec::new();
-    let (mut stored_unknown, mut removed_unknown) = (0, 0);
+    let (mut stored_unknown, mut removed_unknown, mut events_other_medium) = (0, 0, 0);
+    // Groups whose stored events cover more tokens than their blocks.
+    let mut covers_more: BTreeSet<u32> = BTreeSet::new();
     for e in events {
         let g = e.group.unwrap_or(0);
+        if e.medium.as_deref().is_some_and(|m| m != "GPU") {
+            events_other_medium += 1;
+            continue;
+        }
         match e.kind {
             KvEventKind::Stored => {
                 let gs = group(&mut groups, g);
                 gs.stored_blocks += e.hashes.len() as u64;
+                if let Some(kind) = &e.spec_kind {
+                    match &gs.spec_kind {
+                        Some(k) if k != kind => {
+                            bail!("group {g}: stored events name spec kinds {k:?} and {kind:?}")
+                        }
+                        _ => gs.spec_kind = Some(kind.clone()),
+                    }
+                }
                 if e.block_size == Some(block_size)
                     && e.n_tokens.unwrap_or(0) > e.hashes.len() * block_size
                 {
-                    gs.skips_blocks = true;
+                    covers_more.insert(g);
                 }
                 for h in &e.hashes {
                     match by_hash.get(h.as_str()) {
@@ -298,6 +323,17 @@ pub fn analyse(
             }
             KvEventKind::Cleared => changes.push((e.t_ms, Change::Clear)),
         }
+    }
+    for gs in groups.values_mut() {
+        gs.skips_blocks = match gs.spec_kind.as_deref() {
+            Some("mamba") => true,
+            Some("full_attention" | "mla_attention" | "sink_full_attention") => false,
+            Some(other) => bail!(
+                "group {}: kv-residency does not model spec kind {other:?}",
+                gs.group
+            ),
+            None => covers_more.contains(&gs.group),
+        };
     }
     let full: Vec<u32> = groups
         .values()
@@ -322,7 +358,9 @@ pub fn analyse(
 
     let analysed: Vec<(&CallLine, Vec<u64>)> = calls
         .iter()
-        .filter(|c| !c.warmup && c.error.is_none() && c.cached_tokens.is_some())
+        .filter(|c| {
+            !c.warmup && c.error.is_none() && c.cached_tokens.is_some() && c.ttft_ms.is_some()
+        })
         .filter_map(|c| c.block_fps.as_ref().map(|f| (c, f)))
         .map(|(c, f)| Ok((c, f.iter().map(|s| parse_fp(s)).collect::<Result<_>>()?)))
         .collect::<Result<_>>()?;
@@ -350,7 +388,7 @@ pub fn analyse(
             at_first_token: false,
         });
         queries.push(Query {
-            t_ms: c.sent_ms + c.ttft_ms.unwrap_or(0.0),
+            t_ms: c.sent_ms + c.ttft_ms.unwrap_or_default(),
             call: i,
             at_first_token: true,
         });
@@ -381,10 +419,15 @@ pub fn analyse(
             next += 1;
         }
         let (c, fps) = &analysed[q.call];
+        // vLLM recomputes a prompt's last token, so a prompt of exactly `k`
+        // blocks reuses at most `k - 1`.
+        let max_reusable = c
+            .rendered_tokens
+            .map_or(fps.len(), |r| r.saturating_sub(1) as usize / block_size);
         if q.at_first_token {
-            at_first[q.call] = held.prefix(fps, &full, &skipping, Some(c.sent_ms));
+            at_first[q.call] = held.prefix(fps, &full, &skipping, Some(c.sent_ms), max_reusable);
         } else {
-            at_send[q.call] = held.prefix(fps, &full, &skipping, None);
+            at_send[q.call] = held.prefix(fps, &full, &skipping, None, max_reusable);
             state_seen_before_send[q.call] =
                 held.state_ever_stored(fps, at_send[q.call].0, &skipping);
             seen_before_send[q.call] = fps
@@ -399,6 +442,7 @@ pub fn analyse(
         groups: groups.into_values().collect(),
         stored_unknown,
         removed_unknown,
+        events_other_medium,
         calls: analysed.len(),
         calls_all_blocks_stored: 0,
         calls_cached_above_reusable_at_send: 0,
@@ -458,8 +502,11 @@ fn console(s: &ResidencySummary) -> String {
     let mut out = format!("KV residency (block size {} tokens)\n", s.block_size);
     for g in &s.groups {
         out += &format!(
-            "  group {}: {} blocks stored, {} removed{}\n",
+            "  group {}{}: {} blocks stored, {} removed{}\n",
             g.group,
+            g.spec_kind
+                .as_deref()
+                .map_or(String::new(), |k| format!(" ({k})")),
             g.stored_blocks,
             g.removed_blocks,
             if g.skips_blocks { ", skips blocks" } else { "" }
@@ -467,12 +514,14 @@ fn console(s: &ResidencySummary) -> String {
     }
     out += &format!(
         "  blocks with no known fingerprint: {} stored, {} removed\n\
+         \x20 events for a medium other than the GPU (not counted): {}\n\
          \x20 calls: {} analysed, {} with every block stored by the server\n\
          \x20 calls reusing more than was reusable at send: {}\n\
          \x20 calls reusing less than was held from send to first token: {}\n\
          \x20 misses (reusable blocks in the trace, none reused): {}\n",
         s.stored_unknown,
         s.removed_unknown,
+        s.events_other_medium,
         s.calls,
         s.calls_all_blocks_stored,
         s.calls_cached_above_reusable_at_send,
@@ -547,6 +596,8 @@ mod tests {
                 block_size: None,
                 n_tokens: None,
                 fps: Vec::new(),
+                spec_kind: None,
+                medium: None,
             });
             self.events.last_mut().unwrap()
         }
@@ -683,6 +734,69 @@ mod tests {
         let (_, lines) = classes(&[call(1, &PROMPT, 10.0, 5.0, 0)], &log);
         assert_eq!(lines[0].held_prefix_at_send, 3);
         assert_eq!(lines[0].miss, Some(MissClass::StateNeverStored));
+    }
+
+    #[test]
+    fn group_kinds_come_from_the_spec_kind_where_events_carry_it() {
+        let mut log = Log::default();
+        log.stored(0.0, 0, &["a", "b", "c"], None, &PROMPT);
+        log.events.last_mut().unwrap().spec_kind = Some("full_attention".into());
+        // A Mamba event that covers exactly its one block.
+        log.stored(0.0, 1, &["a"], None, &PROMPT[..2]);
+        log.events.last_mut().unwrap().spec_kind = Some("mamba".into());
+        let (s, lines) = classes(&[call(1, &PROMPT, 10.0, 5.0, 1)], &log);
+        assert_eq!(
+            s.groups
+                .iter()
+                .map(|g| (g.group, g.skips_blocks))
+                .collect::<Vec<_>>(),
+            vec![(0, false), (1, true)]
+        );
+        assert_eq!(
+            (lines[0].held_prefix_at_send, lines[0].reusable_at_send),
+            (3, 1)
+        );
+
+        log.events.last_mut().unwrap().spec_kind = Some("sliding_window".into());
+        let err = analyse(&[call(1, &PROMPT, 10.0, 5.0, 1)], &log.events, BS).unwrap_err();
+        assert!(err.to_string().contains("sliding_window"), "{err}");
+    }
+
+    #[test]
+    fn events_for_another_medium_are_not_held() {
+        let mut log = Log::default();
+        log.stored(0.0, 0, &["a", "b", "c"], None, &PROMPT);
+        log.events.last_mut().unwrap().medium = Some("CPU".into());
+        log.stored(1.0, 0, &["a"], None, &PROMPT[..2]);
+        let (s, lines) = classes(&[call(1, &PROMPT, 10.0, 5.0, 1)], &log);
+        assert_eq!(s.events_other_medium, 1);
+        assert_eq!(lines[0].held_prefix_at_send, 1);
+    }
+
+    #[test]
+    fn a_prompt_of_whole_blocks_cannot_reuse_its_last_block() {
+        let mut log = Log::default();
+        log.stored(0.0, 0, &["a", "b", "c"], None, &PROMPT);
+        let (s, lines) = classes(&[call(1, &PROMPT, 10.0, 5.0, 4)], &log);
+        assert_eq!(
+            (lines[0].held_prefix_at_send, lines[0].reusable_at_send),
+            (3, 2)
+        );
+        assert_eq!(lines[0].reusable_at_first_token, 2);
+        assert_eq!(s.calls_cached_below_reusable_at_first_token, 0);
+        // One token more and the third block is reusable.
+        let longer = [1, 2, 3, 4, 5, 6, 7];
+        let (_, lines) = classes(&[call(1, &longer, 10.0, 5.0, 6)], &log);
+        assert_eq!(lines[0].reusable_at_send, 3);
+    }
+
+    #[test]
+    fn a_call_without_a_first_token_time_is_not_analysed() {
+        let log = stored_prompt();
+        let mut c = call(2, &PROMPT, 10.0, 5.0, 0);
+        c.ttft_ms = None;
+        let (s, _) = classes(&[call(1, &PROMPT, 10.0, 5.0, 2), c], &log);
+        assert_eq!(s.calls, 1);
     }
 
     #[test]
