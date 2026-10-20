@@ -206,7 +206,9 @@ pub struct KvEventRecord {
     pub t_ms: f64,
     /// The batch's sequence number.
     pub seq: u64,
-    /// The server's timestamp for the batch, in seconds since the epoch.
+    /// The server's timestamp for the batch, in seconds since the epoch; 0
+    /// for a `cleared` record written for a sequence reset whose batch could
+    /// not be decoded.
     pub ts: f64,
     pub kind: KvEventKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -293,9 +295,10 @@ pub struct KvEventStats {
     /// publisher numbered that replay did not receive.
     pub batches_missed: u64,
     /// Batches whose sequence number was not above the previous one's, as
-    /// when the server restarts. Each is written to the log as a `cleared`
-    /// event before the batch's own events, since a restarted server holds
-    /// no blocks.
+    /// when the server restarts. A restarted server starts with an empty
+    /// cache, so the log gets a `cleared` event before the first batch
+    /// received from it; batches it numbered before that one count in
+    /// `batches_missed`.
     pub seq_resets: u64,
     /// Batches received that could not be decoded; their events are not in
     /// the log.
@@ -308,11 +311,13 @@ pub struct KvEventStats {
     pub block_size_mismatch: u64,
 }
 
-fn cleared(t_ms: f64, seq: u64) -> KvEventRecord {
+/// The `cleared` record written before the first batch after a sequence
+/// reset.
+fn cleared(t_ms: f64, seq: u64, ts: f64) -> KvEventRecord {
     KvEventRecord {
         t_ms,
         seq,
-        ts: 0.0,
+        ts,
         kind: KvEventKind::Cleared,
         group: None,
         hashes: Vec::new(),
@@ -490,20 +495,30 @@ async fn receive(
             warn!("KV events: sequence frame of {} bytes", seq.len());
             continue;
         };
-        match last_seq {
-            Some(last) if seq > last + 1 => stats.batches_missed += seq - last - 1,
+        let reset = match last_seq {
+            Some(last) if seq > last + 1 => {
+                stats.batches_missed += seq - last - 1;
+                false
+            }
             Some(last) if seq <= last => {
+                // The restarted server numbered batches 0..seq before this one.
                 stats.seq_resets += 1;
+                stats.batches_missed += seq;
                 warn!(
                     "KV events: sequence number {seq} after {last}; treating as a server restart"
                 );
-                let _ = tx.send(vec![cleared(t_ms, seq)]);
+                true
             }
-            _ => {}
-        }
+            _ => false,
+        };
         last_seq = Some(seq);
         stats.first_seq.get_or_insert(seq);
-        let batch = match decode_batch(payload) {
+        let batch = decode_batch(payload);
+        if reset {
+            let ts = batch.as_ref().map_or(0.0, |b| b.ts);
+            let _ = tx.send(vec![cleared(t_ms, seq, ts)]);
+        }
+        let batch = match batch {
             Ok(b) => b,
             Err(e) => {
                 stats.batches_undecoded += 1;
@@ -666,8 +681,9 @@ mod tests {
         ]));
         // The subscription reaches the publisher asynchronously, so the
         // first batches may be lost; 0..=2 leaves the count of missed batches
-        // the same whichever of them arrives first. The final 0 is a restart.
-        for seq in [0u64, 1, 2, 5, 0] {
+        // the same whichever of them arrives first. The final 1 is a restart
+        // whose batch 0 was lost.
+        for seq in [0u64, 1, 2, 5, 1] {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let mut m = ZmqMessage::from(Vec::<u8>::new());
             m.push_back(seq.to_be_bytes().to_vec().into());
@@ -676,13 +692,18 @@ mod tests {
         }
         let stats = capture.finish().await.unwrap();
         assert!(stats.batches >= 2, "{stats:?}");
-        assert_eq!(stats.batches_missed, 2);
+        assert_eq!(stats.batches_missed, 3);
         assert_eq!(stats.seq_resets, 1);
         let text = std::fs::read_to_string(&config.log).unwrap();
         let lines: Vec<KvEventRecord> = text
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
+        let reset = lines
+            .iter()
+            .find(|r| r.kind == KvEventKind::Cleared)
+            .unwrap();
+        assert_eq!(reset.ts, 1.0, "the cleared record carries the batch's ts");
         let kinds: Vec<_> = lines[lines.len() - 3..].iter().map(|r| r.kind).collect();
         assert_eq!(
             kinds,

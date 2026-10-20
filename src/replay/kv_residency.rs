@@ -12,7 +12,10 @@
 //! other group holds blocks `0..k` and every skipping group holds block
 //! `k - 1`, the state at the end of the prefix. vLLM never reuses a prompt's
 //! last token, so a prompt of exactly `k` blocks can reuse at most `k - 1`.
-//! Event logs with a sliding-window or other group kind are refused.
+//! Event logs that name a sliding-window or other group kind are refused.
+//! Without a spec kind, a sliding-window group also covers more tokens than
+//! its blocks and is treated as a Mamba group, which overstates what it can
+//! serve.
 //!
 //! vLLM stores a call's prompt blocks when it schedules the call, before its
 //! first token. At the first token, a block counts as held only if it has
@@ -58,8 +61,8 @@ pub enum MissClass {
     /// sent because the attention blocks were removed.
     EvictedBeforeSend,
     /// Stored earlier; the attention blocks were held when the call was sent,
-    /// and for no held prefix had every skipping group stored the state at
-    /// its end.
+    /// but no held prefix ended at a state that every skipping group had
+    /// stored.
     StateNeverStored,
     /// Stored earlier; the attention blocks were held when the call was sent,
     /// and the state at the end of a held prefix had been stored but was no
@@ -365,7 +368,9 @@ pub fn analyse(
         .map(|(c, f)| Ok((c, f.iter().map(|s| parse_fp(s)).collect::<Result<_>>()?)))
         .collect::<Result<_>>()?;
     if analysed.is_empty() {
-        bail!("the replay log has no successful non-warmup calls with block_fps");
+        bail!(
+            "the replay log has no successful non-warmup calls with block_fps and a first-token time"
+        );
     }
     if let Some((c, fps)) = analysed.iter().find(|(c, fps)| {
         c.rendered_tokens
@@ -402,6 +407,15 @@ pub fn analyse(
     let mut seen_before_send = vec![false; analysed.len()];
     let mut state_seen_before_send = vec![false; analysed.len()];
     let mut held = Held::default();
+    // vLLM recomputes a prompt's last token, so a prompt of exactly `k`
+    // blocks reuses at most `k - 1`.
+    let caps: Vec<usize> = analysed
+        .iter()
+        .map(|(c, fps)| {
+            c.rendered_tokens
+                .map_or(fps.len(), |r| r.saturating_sub(1) as usize / block_size)
+        })
+        .collect();
     let mut next = 0;
     for q in &queries {
         while next < changes.len() && changes[next].0 <= q.t_ms {
@@ -419,17 +433,13 @@ pub fn analyse(
             next += 1;
         }
         let (c, fps) = &analysed[q.call];
-        // vLLM recomputes a prompt's last token, so a prompt of exactly `k`
-        // blocks reuses at most `k - 1`.
-        let max_reusable = c
-            .rendered_tokens
-            .map_or(fps.len(), |r| r.saturating_sub(1) as usize / block_size);
+        let max_reusable = caps[q.call];
         if q.at_first_token {
             at_first[q.call] = held.prefix(fps, &full, &skipping, Some(c.sent_ms), max_reusable);
         } else {
             at_send[q.call] = held.prefix(fps, &full, &skipping, None, max_reusable);
             state_seen_before_send[q.call] =
-                held.state_ever_stored(fps, at_send[q.call].0, &skipping);
+                held.state_ever_stored(fps, at_send[q.call].0.min(max_reusable), &skipping);
             seen_before_send[q.call] = fps
                 .first()
                 .is_some_and(|fp| held.first_stored.contains_key(fp));
@@ -456,21 +466,23 @@ pub fn analyse(
         let all_blocks_stored = fps.iter().all(|fp| stored_fps.contains(fp));
         let (held_send, reusable_send) = at_send[i];
         let (held_first, reusable_first) = at_first[i];
+        // Blocks that could be reused, given the cap on the last block.
+        let held_reusable = held_send.min(caps[i]);
         summary.calls_all_blocks_stored += all_blocks_stored as usize;
         summary.calls_cached_above_reusable_at_send +=
             (cached_blocks > reusable_send as u64) as usize;
         summary.calls_cached_below_reusable_at_first_token +=
             (cached_blocks < reusable_first as u64) as usize;
-        let miss = (reuse_blocks > 0 && cached_blocks == 0).then(|| {
+        let miss = (reuse_blocks.min(caps[i] as u64) > 0 && cached_blocks == 0).then(|| {
             if reusable_first > 0 {
                 MissClass::HeldAtFirstToken
             } else if reusable_send > 0 {
                 MissClass::EvictedWhileQueued
             } else if !seen_before_send[i] {
                 MissClass::NeverStored
-            } else if held_send > 0 && !state_seen_before_send[i] {
+            } else if held_reusable > 0 && !state_seen_before_send[i] {
                 MissClass::StateNeverStored
-            } else if held_send > 0 {
+            } else if held_reusable > 0 {
                 MissClass::StateEvictedBeforeSend
             } else {
                 MissClass::EvictedBeforeSend
@@ -788,6 +800,24 @@ mod tests {
         let longer = [1, 2, 3, 4, 5, 6, 7];
         let (_, lines) = classes(&[call(1, &longer, 10.0, 5.0, 6)], &log);
         assert_eq!(lines[0].reusable_at_send, 3);
+    }
+
+    #[test]
+    fn the_last_block_cap_applies_to_the_miss_classes() {
+        // Attention only: a one-block prompt has nothing reusable, so a call
+        // that reused nothing is not a miss.
+        let mut log = Log::default();
+        log.stored(0.0, 0, &["a"], None, &PROMPT[..2]);
+        let (s, lines) = classes(&[call(1, &PROMPT[..2], 10.0, 5.0, 0)], &log);
+        assert_eq!(s.misses, 0);
+        assert_eq!(lines[0].miss, None);
+        // Hybrid: the only state is at the last block, which cannot be
+        // reused, and nothing was removed.
+        let mut log = Log::default();
+        log.stored(0.0, 0, &["a", "b", "c"], None, &PROMPT);
+        log.stored(0.0, 1, &["c"], None, &PROMPT);
+        let (_, lines) = classes(&[call(1, &PROMPT, 10.0, 5.0, 0)], &log);
+        assert_eq!(lines[0].miss, Some(MissClass::StateNeverStored));
     }
 
     #[test]

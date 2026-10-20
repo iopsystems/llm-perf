@@ -335,36 +335,41 @@ The summary reports batches received, the first sequence number received
 (`first_seq`; vLLM numbers batches from 0 when it starts), sequence numbers
 skipped after it (`batches_missed`), batches whose sequence number was not
 above the previous one's (`seq_resets`), batches that could not be decoded,
-and receive errors. A sequence reset means the server restarted and holds no
-blocks, so the log gets a `cleared` event before that batch. vLLM's PUB socket drops batches for a subscriber whose queue
-has reached its high-water mark (`hwm`, 100000 by default), and a batch whose
-send fails leaves a gap. The analysis assumes vLLM's default
-`kv_cache_report_mode`, `incremental`, in which a stored event means a block
-was added to the cache.
+and receive errors. A restarted server starts with an empty cache, so the
+log gets a `cleared` event before the first batch received from it; batches
+it numbered before that one count as missed. A restart whose first batch
+received has a higher number than the last batch before it is not detected.
+vLLM's PUB socket drops batches for a subscriber whose queue has reached its
+high-water mark (`hwm`, 100000 by default), and a batch whose send fails
+leaves a gap. The analysis assumes vLLM's default `kv_cache_report_mode`,
+`incremental`, in which a stored event means a block was added to the cache.
 
 `llm-perf kv-residency replay.jsonl kv-events.jsonl --block-size 528` replays
 the event log against the calls; `--block-size` is the `block_size` the run
 used. For each successful non-warmup call it finds how many leading prompt
 blocks the server held when the call was sent, and how many of those it
-could have reused. Only events for GPU blocks count. A Mamba group (spec kind
-`mamba`, or, in events without a spec kind, one whose stored events skip
-blocks, as in "align" prefix caching) counts a prefix of `k` blocks as
-reusable when it holds the state at the end of the prefix's last block. A
-prompt of exactly `k` blocks can reuse at most `k - 1`, since vLLM recomputes
-the last token. Event logs with a sliding-window or other group kind are
-refused. Calls without a first-token time are not analysed.
-vLLM stores a call's prompt blocks when it schedules the call, so at the
-call's first token only blocks held without a break since the send count.
+could have reused. Only events for GPU blocks count. A Mamba group counts a
+prefix of `k` blocks as reusable when it holds the state at the end of the
+prefix's last block. A group is a Mamba group when its stored events name
+the spec kind `mamba`. Without a spec kind, a group whose stored events skip
+blocks (as in "align" prefix caching) is treated as one; a sliding-window
+group also skips blocks and is treated the same, which overstates what it
+can serve. Event logs that name a sliding-window or other group kind are
+refused. A prompt of exactly `k` blocks can reuse at most `k - 1`, since vLLM
+recomputes the last token. Calls without a first-token time are not
+analysed. vLLM stores a call's prompt blocks when it schedules the call, so
+at the call's first token only blocks held without a break since the send
+count.
 
 It checks that every call's blocks appear in a stored event, counts stored
 blocks with no fingerprint and calls whose reported cached blocks exceed what
 was reusable at send, and classifies calls with traced reuse and no cached
 tokens by whether and when their prefix was stored and removed: never
-stored, attention blocks held but the state at the end of no held prefix
-stored by every Mamba group, removed before
-the call was sent (attention blocks, or only the Mamba state), removed
-between the send and the first token, or held without a break from the send
-to the first token. `--calls-out` writes one line per call.
+stored; attention blocks held, but no held prefix ending at a state that
+every Mamba group had stored; removed before the call was sent (attention
+blocks, or only the Mamba state); removed between the send and the first
+token; or held without a break from the send to the first token.
+`--calls-out` writes one line per call.
 
 ### Configuration
 
