@@ -466,8 +466,6 @@ pub fn analyse(
         let all_blocks_stored = fps.iter().all(|fp| stored_fps.contains(fp));
         let (held_send, reusable_send) = at_send[i];
         let (held_first, reusable_first) = at_first[i];
-        // Blocks that could be reused, given the cap on the last block.
-        let held_reusable = held_send.min(caps[i]);
         summary.calls_all_blocks_stored += all_blocks_stored as usize;
         summary.calls_cached_above_reusable_at_send +=
             (cached_blocks > reusable_send as u64) as usize;
@@ -480,9 +478,9 @@ pub fn analyse(
                 MissClass::EvictedWhileQueued
             } else if !seen_before_send[i] {
                 MissClass::NeverStored
-            } else if held_reusable > 0 && !state_seen_before_send[i] {
+            } else if held_send > 0 && !state_seen_before_send[i] {
                 MissClass::StateNeverStored
-            } else if held_reusable > 0 {
+            } else if held_send > 0 {
                 MissClass::StateEvictedBeforeSend
             } else {
                 MissClass::EvictedBeforeSend

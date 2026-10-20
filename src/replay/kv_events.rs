@@ -692,7 +692,10 @@ mod tests {
         }
         let stats = capture.finish().await.unwrap();
         assert!(stats.batches >= 2, "{stats:?}");
-        assert_eq!(stats.batches_missed, 3);
+        // 2 between 2 and 5, and the restart's batch 0; only 1 when 0..=2
+        // were all lost before the subscription landed.
+        let expected = if stats.first_seq == Some(5) { 1 } else { 3 };
+        assert_eq!(stats.batches_missed, expected);
         assert_eq!(stats.seq_resets, 1);
         let text = std::fs::read_to_string(&config.log).unwrap();
         let lines: Vec<KvEventRecord> = text
