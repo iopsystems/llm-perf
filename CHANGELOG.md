@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - metriken-recorder 0.3.1: with `server_metrics_url` set to a Prometheus `/metrics` URL, a label value containing `=` or `,` is recorded as written (it was dropped or cut short), a sample whose label value contains `}` is recorded (it was dropped), and an escaped value is stored unescaped. A sample line that does not parse (a label name with `.`, `-` or `:`, an unquoted value) is skipped, logged at `warn` the first time for each endpoint and at `debug` after; prometheus-parse kept some such lines under the labels it could split.
 - metriken-recorder 0.3.0: a streamed server is recorded at the interval it serves, and the wait for its last frame after a completed run is up to the longer of `[metrics] interval` and that interval, plus twice `[metrics] interval` (at least 2 s, at most 10 s).
 - metriken-exposition 0.23.2: `/metrics/stream` reuses a built pass for three quarters of the 10 ms floor (was the whole floor), so a subscriber at the floor that wakes up to 2.5 ms early is sent a new pass, where it was sent the previous one again as an empty frame.
+- The KPI template's queries no longer match on `source="llm-perf"`, so its charts have data in a recording given another source name. The rezolus 6.x viewer evaluates a recording's template against that recording's series only (outside an A/B comparison), so the server's series in the same `.dendro` are still not read.
 - `.dendro` archives are still dendro schema 4, which rezolus 5.21 to 5.28 read.
 
 ### Bug Fixes

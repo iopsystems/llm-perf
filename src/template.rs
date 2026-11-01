@@ -72,9 +72,10 @@ mod tests {
         }
     }
 
-    /// Every metric a KPI query selects (a name followed by `{`) is one
-    /// llm-perf registers, so a renamed metric fails here rather than leaving
-    /// an empty chart.
+    /// Every metric a KPI query names (a name followed by `{`, or a word
+    /// outside any selector that is not a PromQL word) is one llm-perf
+    /// registers, so a renamed metric fails here rather than leaving an empty
+    /// chart.
     #[test]
     fn template_queries_name_registered_metrics() {
         let registered: std::collections::HashSet<String> = metriken::metrics()
@@ -85,10 +86,14 @@ mod tests {
         let mut checked = 0;
         for kpi in doc["kpis"].as_array().unwrap() {
             let query = kpi["query"].as_str().unwrap();
-            for name in selected_metrics(query) {
+            let bare = words_outside_selectors(query)
+                .into_iter()
+                .filter(|w| !PROMQL_WORDS.contains(w));
+            for name in selected_metrics(query).into_iter().chain(bare) {
                 assert!(
                     registered.contains(name),
-                    "KPI {} queries {name}, which llm-perf does not register",
+                    "KPI {} queries {name}, which is neither a metric llm-perf registers \
+                     nor a word in PROMQL_WORDS",
                     kpi["title"]
                 );
                 checked += 1;
@@ -98,9 +103,9 @@ mod tests {
     }
 
     /// The PromQL words a query may use outside a selector: functions,
-    /// aggregations and keywords. Anything else outside `name{…}` is a metric
-    /// named without a selector, which [`every_selector_names_llm_perfs_source`]
-    /// refuses.
+    /// aggregations and keywords. [`template_queries_name_registered_metrics`]
+    /// requires any other word outside `name{…}` to be a metric llm-perf
+    /// registers, so a PromQL word missing from this list fails there too.
     const PROMQL_WORDS: [&str; 18] = [
         "sum",
         "avg",
@@ -122,46 +127,47 @@ mod tests {
         "ignoring",
     ];
 
-    /// Every metric is named through a selector, and every selector names
-    /// llm-perf's source: in a recording holding llm-perf and the server
-    /// under test, a series without it would also match the server's. A
-    /// metric named without `{…}` fails here, as it is unchecked by the
-    /// selector tests.
+    /// No selector matches on `source`, with any operator. The rezolus 6.x
+    /// viewer evaluates a recording's template against that recording's
+    /// series only (outside an A/B comparison), so the server's series in the same `.dendro`
+    /// are not read, and a `source` matcher would match nothing in a
+    /// recording given another source name. A selector with no name names a
+    /// registered metric in `__name__`.
     #[test]
-    fn every_selector_names_llm_perfs_source() {
-        let wanted = format!("source=\"{}\"", crate::recording::LLM_PERF_SOURCE);
+    fn no_selector_matches_a_source() {
         let doc = template();
         for kpi in doc["kpis"].as_array().unwrap() {
             let query = kpi["query"].as_str().unwrap();
             for (name, matchers) in selectors(query) {
                 assert!(
-                    matchers.split(',').any(|m| m.trim() == wanted),
-                    "KPI {}: {name}{{{matchers}}} does not select {wanted}",
+                    !matches_source(matchers),
+                    "KPI {}: {name}{{{matchers}}} matches on source",
                     kpi["title"]
                 );
             }
-            // A selector with no name names its metric in `__name__`: it must
-            // be a registered metric and select llm-perf's source too.
             for (name, matchers) in nameless_selectors(query) {
+                assert!(
+                    !matches_source(matchers),
+                    "KPI {}: {{{matchers}}} matches on source",
+                    kpi["title"]
+                );
                 assert!(
                     metriken::metrics().iter().any(|m| m.name() == name),
                     "KPI {}: {{{matchers}}} names no registered metric",
                     kpi["title"]
                 );
-                assert!(
-                    matchers.split(',').any(|m| m.trim() == wanted),
-                    "KPI {}: {{{matchers}}} does not select {wanted}",
-                    kpi["title"]
-                );
-            }
-            for word in words_outside_selectors(query) {
-                assert!(
-                    PROMQL_WORDS.contains(&word),
-                    "KPI {}: {word} is outside any selector and is not a PromQL word",
-                    kpi["title"]
-                );
             }
         }
+    }
+
+    /// Whether any of a selector's `matchers` has the label name `source`
+    /// (quoted or not), with `=`, `!=`, `=~` or `!~`.
+    fn matches_source(matchers: &str) -> bool {
+        matchers.split(',').any(|m| {
+            m.split(['=', '!'])
+                .next()
+                .is_some_and(|k| k.trim().trim_matches('"') == "source")
+        })
     }
 
     /// Keywords whose following `(…)` lists label names, not an expression.
@@ -273,11 +279,11 @@ mod tests {
         );
     }
 
-    /// Every label a selector matches on, other than `source`, is one the
-    /// metric's slots carry after `Metrics::init`, with that value, so a
-    /// renamed status or direction fails here rather than leaving an empty
-    /// chart. A matcher on any metric not listed here fails too, so the list
-    /// grows with the template.
+    /// Every label a selector matches on is one the metric's slots carry
+    /// after `Metrics::init`, with that value, so a renamed status or
+    /// direction fails here rather than leaving an empty chart. A matcher
+    /// on any metric not listed here fails too, so the list grows with the
+    /// template.
     #[test]
     fn selector_labels_are_ones_the_metrics_carry() {
         use crate::metrics::{Metrics, REQUESTS, TOKENS};
@@ -297,9 +303,6 @@ mod tests {
                         !key.ends_with('!') && !value.starts_with('~'),
                         "{matcher}: only equality matchers are checked"
                     );
-                    if key == "source" {
-                        continue;
-                    }
                     let value = value.trim_matches('"');
                     let (_, group) = groups
                         .iter()

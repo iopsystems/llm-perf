@@ -541,20 +541,24 @@ metadata; in llm-perf's own source in the run's `.dendro`; and in the file
 metadata of the parquet written at exit. The viewer renders the template a
 `.dendro` recording carries, so a change to it ships with llm-perf. Rezolus's
 built-in copy is used only for recordings that carry none (made by an older
-llm-perf, or scraped from `/metrics`). Every query selects
-`source="llm-perf"`, and a parquet's series carry no `source` label (the
-source is in the file metadata only), so the parquet's KPI charts are empty
-until rezolus attaches a single-source parquet's source to its series as a
-label. Tests in `src/template.rs` check that each query names metrics only
-through selectors, each naming `source="llm-perf"`, that those are metrics
-llm-perf registers, with label values its metrics carry, and that every
-`unit_system` is one the viewer knows.
+llm-perf, or scraped from `/metrics`). No query matches on `source`, so the
+charts have data when llm-perf's recording has another source name (for
+example, another llm-perf recording it as the server under test with
+`server_source = "llm-perf-b"`, or `rezolus record --endpoint
+URL,source=lp-b`). The rezolus 6.x viewer evaluates a recording's template
+against that recording's series only (except in an A/B comparison,
+`rezolus view --baseline/--experiment` or recordings labelled `arm`, which
+applies one template to both arms), so the server's series in the same
+`.dendro` are not read.
+Tests in `src/template.rs` check that no selector matches on `source`, that
+each query names only metrics llm-perf registers, with label values its
+metrics carry, and that every `unit_system` is one the viewer knows.
 
 llm-perf attaches no template to the server under test's recording. A
 streamed server sends its own. A scraped one (vLLM, SGLang) is named after
-its host and port unless `[metrics] server_source` names it; the viewer's
-built-in vLLM and SGLang templates select `source="vllm"` and
-`source="sglang"`, so set `server_source = "vllm"` (or `"sglang"`) for them
+its host and port unless `[metrics] server_source` names it; the viewer
+applies its built-in vLLM and SGLang templates to recordings whose source is
+`vllm` or `sglang`, so set `server_source = "vllm"` (or `"sglang"`) for them
 to apply. `server_source` needs `server_metrics_url`, and an empty value or
 `llm-perf` (in any case) is refused at startup:
 
