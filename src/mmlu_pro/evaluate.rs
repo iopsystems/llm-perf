@@ -513,6 +513,7 @@ pub async fn run_evaluation(
         model: model.to_string(),
         timeout: std::time::Duration::from_secs(config.endpoint.timeout),
         max_retries: 3,
+        connection_retries: crate::client::DEFAULT_CONNECTION_RETRIES,
         retry_initial_delay_ms: 1000,
         retry_max_delay_ms: 30000,
         pool_size: config.load.concurrent_requests,

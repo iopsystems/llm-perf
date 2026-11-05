@@ -91,6 +91,12 @@ pub struct EndpointConfig {
     pub api_key: Option<String>,
     #[serde(default)]
     pub max_retries: u32,
+    /// Immediate retries for a request whose send fails with a connection
+    /// error before response headers arrive, counted apart from `max_retries`.
+    /// A request sent on a pooled connection the server is closing fails this
+    /// way without being read. 0 turns this off.
+    #[serde(default = "default_connection_retries")]
+    pub connection_retries: u32,
     #[serde(default = "default_retry_initial_delay_ms")]
     pub retry_initial_delay_ms: u64,
     #[serde(default = "default_retry_max_delay_ms")]
@@ -802,6 +808,10 @@ fn default_min_throughput_ratio() -> f64 {
 
 fn default_timeout() -> u64 {
     60
+}
+
+fn default_connection_retries() -> u32 {
+    crate::client::DEFAULT_CONNECTION_RETRIES
 }
 
 fn default_retry_initial_delay_ms() -> u64 {

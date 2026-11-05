@@ -51,6 +51,7 @@ format = "json"
         model: "Qwen/Qwen3-1.7B".to_string(),
         timeout: Duration::from_secs(cfg.endpoint.timeout),
         max_retries: cfg.endpoint.max_retries,
+        connection_retries: cfg.endpoint.connection_retries,
         retry_initial_delay_ms: cfg.endpoint.retry_initial_delay_ms,
         retry_max_delay_ms: cfg.endpoint.retry_max_delay_ms,
         pool_size: 4,

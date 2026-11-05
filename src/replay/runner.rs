@@ -320,6 +320,8 @@ pub async fn run(mut config: Config) -> Result<()> {
         model: model.clone(),
         timeout: Duration::from_secs(config.endpoint.timeout),
         max_retries,
+        // Replay never resends a generation request: see the comment above.
+        connection_retries: 0,
         retry_initial_delay_ms: config.endpoint.retry_initial_delay_ms,
         retry_max_delay_ms: config.endpoint.retry_max_delay_ms,
         pool_size,

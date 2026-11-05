@@ -403,6 +403,7 @@ async fn run_logprobs_collection(
         model,
         timeout: std::time::Duration::from_secs(config.endpoint.timeout),
         max_retries: config.endpoint.max_retries,
+        connection_retries: config.endpoint.connection_retries,
         retry_initial_delay_ms: config.endpoint.retry_initial_delay_ms,
         retry_max_delay_ms: config.endpoint.retry_max_delay_ms,
         pool_size: 1,
