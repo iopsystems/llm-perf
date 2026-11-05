@@ -319,11 +319,11 @@ fn throughput_window(last: &LastCompletionUs, elapsed: Duration) -> Duration {
 /// The longest one request can legitimately take.
 ///
 /// The client deadlines each attempt at `endpoint.timeout` and retries up to
-/// `max_retries` times (see `client.rs`), so this is the real per-request
-/// ceiling -- using `timeout` alone understates it by a factor of
-/// `max_retries + 1`.
-fn request_ceiling(endpoint_timeout_secs: u64, max_retries: u32) -> Duration {
-    Duration::from_secs(endpoint_timeout_secs.saturating_mul(u64::from(max_retries) + 1))
+/// `max_retries` times, plus `connection_retries` for connection errors (see
+/// `client.rs`); `retries` is their sum. This is the real per-request ceiling --
+/// using `timeout` alone understates it by a factor of `retries + 1`.
+fn request_ceiling(endpoint_timeout_secs: u64, retries: u32) -> Duration {
+    Duration::from_secs(endpoint_timeout_secs.saturating_mul(u64::from(retries) + 1))
 }
 
 /// Safety net for the post-loop wait. This bounds a WEDGED client, not the test.
@@ -343,11 +343,11 @@ fn request_ceiling(endpoint_timeout_secs: u64, max_retries: u32) -> Duration {
 fn teardown_grace(
     outstanding_per_worker: usize,
     endpoint_timeout_secs: u64,
-    max_retries: u32,
+    retries: u32,
 ) -> Duration {
     const SLACK: Duration = Duration::from_secs(60);
     let per_worker = u32::try_from(outstanding_per_worker.max(1)).unwrap_or(u32::MAX);
-    request_ceiling(endpoint_timeout_secs, max_retries)
+    request_ceiling(endpoint_timeout_secs, retries)
         .saturating_mul(per_worker)
         .saturating_add(SLACK)
 }
@@ -496,6 +496,7 @@ impl BenchmarkRunner {
             model: model.clone(),
             timeout: Duration::from_secs(config.endpoint.timeout),
             max_retries: config.endpoint.max_retries,
+            connection_retries: config.endpoint.connection_retries,
             retry_initial_delay_ms: config.endpoint.retry_initial_delay_ms,
             retry_max_delay_ms: config.endpoint.retry_max_delay_ms,
             pool_size: config.load.concurrent_requests, // Pool size matches concurrency
@@ -1307,7 +1308,10 @@ impl BenchmarkRunner {
         let grace_period = teardown_grace(
             per_worker,
             self.config.endpoint.timeout,
-            self.config.endpoint.max_retries,
+            self.config
+                .endpoint
+                .max_retries
+                .saturating_add(self.config.endpoint.connection_retries),
         );
         for handle in handles {
             match tokio::time::timeout(grace_period, handle).await {
@@ -1574,7 +1578,10 @@ impl BenchmarkRunner {
         let grace_period = teardown_grace(
             1,
             self.config.endpoint.timeout,
-            self.config.endpoint.max_retries,
+            self.config
+                .endpoint
+                .max_retries
+                .saturating_add(self.config.endpoint.connection_retries),
         );
         for handle in handles {
             if tokio::time::timeout(grace_period, handle).await.is_err() {
@@ -1990,7 +1997,10 @@ impl BenchmarkRunner {
         let grace_period = teardown_grace(
             1,
             self.config.endpoint.timeout,
-            self.config.endpoint.max_retries,
+            self.config
+                .endpoint
+                .max_retries
+                .saturating_add(self.config.endpoint.connection_retries),
         );
         for handle in handles {
             match timeout(grace_period, handle).await {

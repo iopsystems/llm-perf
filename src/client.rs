@@ -37,6 +37,7 @@ pub struct OpenAIClient {
     api_key: Option<String>,
     model: String,
     max_retries: u32,
+    connection_retries: u32,
     retry_initial_delay_ms: u64,
     retry_max_delay_ms: u64,
     timeout: Duration,
@@ -453,6 +454,11 @@ pub struct ClientConfig {
     pub timeout: Duration,
     /// Maximum number of retry attempts for transient failures
     pub max_retries: u32,
+    /// Immediate retries for a request whose send fails with a connection
+    /// error before response headers arrive, counted apart from `max_retries`.
+    /// After they are used, a connection error is retried like other
+    /// retriable errors, up to `max_retries`.
+    pub connection_retries: u32,
     /// Initial delay in milliseconds for exponential backoff
     pub retry_initial_delay_ms: u64,
     /// Maximum delay in milliseconds for exponential backoff
@@ -475,6 +481,9 @@ pub struct ClientConfig {
 
 /// Default for [`ClientConfig::pool_idle_timeout`].
 pub const DEFAULT_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Default for [`ClientConfig::connection_retries`]; the CLI's default.
+pub const DEFAULT_CONNECTION_RETRIES: u32 = 1;
 
 impl OpenAIClient {
     /// Creates a new OpenAI-compatible HTTP client with retry logic and connection pooling.
@@ -499,6 +508,7 @@ impl OpenAIClient {
     ///     model: "llama-3.1-8b".to_string(),
     ///     timeout: Duration::from_secs(60),
     ///     max_retries: 3,
+    ///     connection_retries: llm_perf::client::DEFAULT_CONNECTION_RETRIES,
     ///     retry_initial_delay_ms: 100,
     ///     retry_max_delay_ms: 10000,
     ///     pool_size: 10,
@@ -528,6 +538,7 @@ impl OpenAIClient {
             api_key: config.api_key,
             model: config.model,
             max_retries: config.max_retries,
+            connection_retries: config.connection_retries,
             retry_initial_delay_ms: config.retry_initial_delay_ms,
             retry_max_delay_ms: config.retry_max_delay_ms,
             timeout: config.timeout,
@@ -711,7 +722,13 @@ impl OpenAIClient {
         // wall time (trimming trailing backoff) without defeating a legitimate
         // retry after an attempt that consumed most of one timeout (e.g. a
         // timed-out attempt when retry_on_timeout is enabled).
-        let deadline = Instant::now() + self.timeout.saturating_mul(self.max_retries + 1);
+        let deadline = Instant::now()
+            + self.timeout.saturating_mul(
+                self.max_retries
+                    .saturating_add(self.connection_retries)
+                    .saturating_add(1),
+            );
+        let mut connection_retries_used = 0;
 
         loop {
             match self.post_json(url, request).await {
@@ -722,7 +739,20 @@ impl OpenAIClient {
                     return Ok(resp);
                 }
                 Err(e) => {
-                    if attempt < self.max_retries && self.is_retriable_error(&e) {
+                    let step = next_retry_step(
+                        &e,
+                        attempt,
+                        self.max_retries,
+                        connection_retries_used,
+                        self.connection_retries,
+                        self.retry_on_timeout,
+                    );
+                    if step == RetryStep::Connection {
+                        log::debug!("Request failed on its connection: {}. Retrying now", e);
+                        connection_retries_used += 1;
+                        continue;
+                    }
+                    if step == RetryStep::Backoff {
                         let delay = self.calculate_backoff_delay(attempt);
                         if Instant::now() + delay >= deadline {
                             log::debug!("Retry budget exhausted; returning error: {}", e);
@@ -898,7 +928,13 @@ impl OpenAIClient {
         let mut attempt = 0;
         // Overall budget: enough for every attempt's full per-attempt timeout, but
         // no more — bounds total wall time without defeating a legitimate retry.
-        let deadline = Instant::now() + self.timeout.saturating_mul(self.max_retries + 1);
+        let deadline = Instant::now()
+            + self.timeout.saturating_mul(
+                self.max_retries
+                    .saturating_add(self.connection_retries)
+                    .saturating_add(1),
+            );
+        let mut connection_retries_used = 0;
 
         loop {
             match self.chat_completion_stream_internal(request.clone()).await {
@@ -909,8 +945,21 @@ impl OpenAIClient {
                     return Ok(stream);
                 }
                 Err(e) => {
-                    // Check if we should retry
-                    if attempt < self.max_retries && self.is_retriable_error(&e) {
+                    let step = next_retry_step(
+                        &e,
+                        attempt,
+                        self.max_retries,
+                        connection_retries_used,
+                        self.connection_retries,
+                        self.retry_on_timeout,
+                    );
+                    if step == RetryStep::Connection {
+                        crate::metrics::Metrics::record_retry();
+                        log::debug!("Request failed on its connection: {}. Retrying now", e);
+                        connection_retries_used += 1;
+                        continue;
+                    }
+                    if step == RetryStep::Backoff {
                         let delay = self.calculate_backoff_delay(attempt);
                         if Instant::now() + delay >= deadline {
                             log::debug!("Retry budget exhausted; returning error: {}", e);
@@ -1041,11 +1090,6 @@ impl OpenAIClient {
         })
     }
 
-    /// Determine if an error should be retried, honoring the configured timeout policy.
-    fn is_retriable_error(&self, error: &anyhow::Error) -> bool {
-        classify_retriable(error, self.retry_on_timeout)
-    }
-
     /// Calculate exponential backoff delay with jitter
     fn calculate_backoff_delay(&self, attempt: u32) -> Duration {
         let base_delay_ms = self.retry_initial_delay_ms * 2_u64.pow(attempt);
@@ -1083,8 +1127,9 @@ fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
 /// so matching on it alone misses every real cause -- those live in the source
 /// chain ("connection closed before message completed"). A pooled keep-alive
 /// connection that the server has already closed surfaces exactly this way, and
-/// is safe to retry: the request never reached the server, so no generation was
-/// started and no work is duplicated.
+/// then the request was never read. A connection that closed after the server
+/// read the request (a reset during a long prefill) surfaces the same way, and
+/// a retry may then repeat work on the server.
 fn is_connection_cause(e: &reqwest::Error) -> bool {
     let mut chain = e.to_string();
     let mut src: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
@@ -1107,10 +1152,53 @@ fn is_connection_cause(e: &reqwest::Error) -> bool {
     .any(|needle| chain.contains(needle))
 }
 
+/// What a retry loop does after a failed attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryStep {
+    /// Resend at once: the attempt failed with a connection error, and a
+    /// connection retry is left.
+    Connection,
+    /// Resend after the backoff delay, counting against `max_retries`.
+    Backoff,
+    /// Return the error.
+    GiveUp,
+}
+
+/// Decide the next step after a failed attempt.
+///
+/// A [`ClientError::Connection`] is raised when `send()` fails before response
+/// headers arrive: the connect failed, or the connection closed after the
+/// request was written. In the second case the server may have received the
+/// request; the client cannot tell. A request sent on a pooled connection the
+/// server is closing fails this way without being read. Up to
+/// `connection_retries` such failures are retried at once, whatever
+/// `max_retries` is; after that a connection error is retried like any other
+/// retriable error.
+fn next_retry_step(
+    error: &anyhow::Error,
+    attempt: u32,
+    max_retries: u32,
+    connection_retries_used: u32,
+    connection_retries: u32,
+    retry_on_timeout: bool,
+) -> RetryStep {
+    let connection = matches!(
+        error.downcast_ref::<ClientError>(),
+        Some(ClientError::Connection(_))
+    );
+    if connection && connection_retries_used < connection_retries {
+        RetryStep::Connection
+    } else if attempt < max_retries && classify_retriable(error, retry_on_timeout) {
+        RetryStep::Backoff
+    } else {
+        RetryStep::GiveUp
+    }
+}
+
 /// Classify whether an error should be retried.
 ///
-/// Connection errors (pre-flight; the request demonstrably never reached the
-/// server) and 5xx server errors are always retriable. Timeouts are retried only
+/// Connection errors (the send failed before response headers arrived) and 5xx
+/// server errors are always retriable. Timeouts are retried only
 /// when `retry_on_timeout` is set, since a timed-out chat completion may still be
 /// running server-side and retrying re-fires an expensive, non-idempotent
 /// generation. 4xx / parse / stream / other errors are never retried.
@@ -1898,6 +1986,7 @@ mod tests {
             model: "test".to_string(),
             timeout: Duration::from_secs(7),
             max_retries: 0,
+            connection_retries: 0,
             retry_initial_delay_ms: 1,
             retry_max_delay_ms: 1,
             pool_size: 1,
@@ -2084,6 +2173,7 @@ mod tests {
                 model: "test".to_string(),
                 timeout: Duration::from_secs(1),
                 max_retries: 0,
+                connection_retries: 0,
                 retry_initial_delay_ms: 1,
                 retry_max_delay_ms: 1,
                 pool_size: 1,
@@ -2203,6 +2293,146 @@ mod tests {
         assert!(classify_retriable(&conn, false));
         assert!(classify_retriable(&s5, false));
         assert!(!classify_retriable(&s4, false));
+    }
+
+    #[test]
+    fn connection_errors_get_their_own_immediate_retries() {
+        let conn: anyhow::Error = ClientError::Connection("closed".into()).into();
+        let s5: anyhow::Error = ClientError::Http5xx {
+            status: 503,
+            message: "busy".into(),
+        }
+        .into();
+        // A connection error is retried at once while connection retries are
+        // left, even with max_retries = 0.
+        assert_eq!(
+            next_retry_step(&conn, 0, 0, 0, 1, false),
+            RetryStep::Connection
+        );
+        // Once they are used it falls back to max_retries.
+        assert_eq!(next_retry_step(&conn, 0, 0, 1, 1, false), RetryStep::GiveUp);
+        assert_eq!(
+            next_retry_step(&conn, 0, 2, 1, 1, false),
+            RetryStep::Backoff
+        );
+        // Other errors never use connection retries.
+        assert_eq!(next_retry_step(&s5, 0, 0, 0, 1, false), RetryStep::GiveUp);
+        assert_eq!(next_retry_step(&s5, 0, 1, 0, 1, false), RetryStep::Backoff);
+        // connection_retries = 0 turns it off.
+        assert_eq!(next_retry_step(&conn, 0, 0, 0, 0, false), RetryStep::GiveUp);
+    }
+
+    /// A server that reads each request and closes the first `drop_first`
+    /// connections without answering (as a request sent on a connection the
+    /// server is closing sees it), then answers with an empty SSE stream.
+    /// Returns its base URL and the number of connections it has accepted.
+    async fn server_dropping_first(
+        drop_first: usize,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(AtomicUsize::new(0));
+        let count = accepted.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let n = count.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                // Read the head, then the body by Content-Length.
+                while let Ok(k) = sock.read(&mut chunk).await {
+                    if k == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..k]);
+                    let text = String::from_utf8_lossy(&buf);
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if buf.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                if n <= drop_first {
+                    drop(sock);
+                    continue;
+                }
+                let body = "data: [DONE]\n\n";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{addr}/v1"), accepted)
+    }
+
+    fn retry_test_client(base_url: String, connection_retries: u32) -> OpenAIClient {
+        OpenAIClient::new(ClientConfig {
+            base_url,
+            api_key: None,
+            model: "test".to_string(),
+            timeout: Duration::from_secs(5),
+            max_retries: 0,
+            connection_retries,
+            retry_initial_delay_ms: 1,
+            retry_max_delay_ms: 1,
+            pool_size: 1,
+            stream_idle_timeout: None,
+            retry_on_timeout: false,
+            chat_template_kwargs: None,
+            ignore_eos: None,
+            pool_idle_timeout: DEFAULT_POOL_IDLE_TIMEOUT,
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_dropped_connection_is_retried_with_max_retries_zero() {
+        let (url, accepted) = server_dropping_first(1).await;
+        let client = retry_test_client(url, 1);
+        let request = client.create_request("hi", Some(4), None, None);
+        let result = client.chat_completion_stream(request).await;
+        assert!(
+            result.is_ok(),
+            "expected the retry to succeed: {:?}",
+            result.err()
+        );
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn connection_retries_zero_returns_the_connection_error() {
+        let (url, accepted) = server_dropping_first(1).await;
+        let client = retry_test_client(url, 0);
+        let request = client.create_request("hi", Some(4), None, None);
+        let err = client
+            .chat_completion_stream(request)
+            .await
+            .err()
+            .expect("an error");
+        assert!(
+            matches!(
+                err.downcast_ref::<ClientError>(),
+                Some(ClientError::Connection(_))
+            ),
+            "expected a connection error, got {err:?}"
+        );
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

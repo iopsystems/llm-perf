@@ -348,6 +348,7 @@ mod tests {
             model: "local".to_string(),
             timeout: std::time::Duration::from_secs(5),
             max_retries: 0,
+            connection_retries: 0,
             retry_initial_delay_ms: 1,
             retry_max_delay_ms: 1,
             pool_size: 1,

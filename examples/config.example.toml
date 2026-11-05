@@ -27,11 +27,23 @@ timeout = 60
 # api_key = "sk-..."
 
 # Retry Configuration
-# Number of times to retry failed requests (0 = no retries)
-# Retriable errors: timeouts, connection errors, HTTP 5xx server errors
+# Number of times to retry failed requests with backoff (0 = no backoff retries)
+# Retriable errors: connection errors, HTTP 5xx server errors, and timeouts when
+# retry_on_timeout is set
 # Non-retriable errors: HTTP 4xx client errors, parse errors
-# Default: 0 (no retries)
+# A connection error first uses connection_retries (below), then these.
+# Default: 0
 # max_retries = 3
+
+# Immediate retries for a request whose send fails with a connection error
+# before response headers arrive, counted apart from max_retries. A request sent
+# on a pooled connection the server is closing fails this way without being
+# read. A connection that closed after the server read the request fails the
+# same way, and a retry may then repeat work on the server. In bench, counted in
+# the report's retries. TTFT is measured from the attempt that succeeded; latency
+# from the first attempt. 0 turns this off.
+# Default: 1
+# connection_retries = 1
 
 # Initial delay before first retry in milliseconds
 # Delay grows exponentially with jitter: base_delay * 2^attempt * (0.5-1.0)
