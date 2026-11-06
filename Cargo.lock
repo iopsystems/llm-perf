@@ -1773,6 +1773,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "include_dir"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "923d117408f1e49d914f1a379a309cffe4f18c05cf4e3d12e613a15fc81bd0dd"
+dependencies = [
+ "include_dir_macros",
+]
+
+[[package]]
+name = "include_dir_macros"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cab85a7ed0bd5f0e76d93846e0147172bed2e2d3f859bcc33a8d9699cad1a75"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2064,7 +2083,7 @@ checksum = "241eaef5fd12c88705a01fc1066c48c4b36e0dd4377dcdc7ec3942cea7a69956"
 
 [[package]]
 name = "llm-perf"
-version = "0.1.22-alpha.3"
+version = "0.1.22-alpha.4"
 dependencies = [
  "anyhow",
  "arrow 56.2.0",
@@ -2080,6 +2099,7 @@ dependencies = [
  "libc",
  "log",
  "metriken",
+ "metriken-charts",
  "metriken-exposition",
  "metriken-model",
  "metriken-recorder",
@@ -2198,6 +2218,16 @@ dependencies = [
  "metriken-types",
  "once_cell",
  "parking_lot",
+]
+
+[[package]]
+name = "metriken-charts"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eaf7d461977a51518d4dfef889edf11ddb1d094a78bca74c26aabe25f76b9bb"
+dependencies = [
+ "include_dir",
+ "serde",
 ]
 
 [[package]]

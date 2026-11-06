@@ -1,6 +1,6 @@
 [package]
 name = "llm-perf"
-version = "0.1.22-alpha.3"
+version = "0.1.22-alpha.4"
 edition = "2024"
 authors = ["Brian Martin <brayniac@gmail.com>"]
 description = "A benchmarking tool for OpenAI-compatible LLM servers"
@@ -73,6 +73,10 @@ tar = "0.4.46"
 # group row payload the frames carry. Both are already in the graph through
 # metriken-exposition's `stream` feature.
 dendro = { version = "0.5.1", default-features = false }
+# The unit systems and histogram views the Rezolus viewer recognises, to
+# validate the KPI template (src/template.rs). Rezolus takes both from this
+# crate since iopsystems/rezolus#1644.
+metriken-charts = "0.1.0"
 metriken-model = "0.1.1"
 # Open the run's archive in the recording tests (`DendroCatalog`).
 metriken-storage = { version = "0.3.2", default-features = false, features = ["archive"] }
