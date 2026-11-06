@@ -33,6 +33,11 @@ pub enum ClientError {
 #[derive(Debug, Clone)]
 pub struct OpenAIClient {
     client: Client,
+    /// Keeps no idle connections, so each request through it opens a new one.
+    /// Every attempt after a connection retry goes through it: an immediate
+    /// resend through `client` can take another pooled connection that the
+    /// server is also closing.
+    unpooled: Client,
     base_url: String,
     api_key: Option<String>,
     model: String,
@@ -456,7 +461,8 @@ pub struct ClientConfig {
     pub max_retries: u32,
     /// Immediate retries for a request whose send fails with a connection
     /// error before response headers arrive, counted apart from `max_retries`.
-    /// After they are used, a connection error is retried like other
+    /// Each opens a new connection, as does every later attempt of the same
+    /// request. After they are used, a connection error is retried like other
     /// retriable errors, up to `max_retries`.
     pub connection_retries: u32,
     /// Initial delay in milliseconds for exponential backoff
@@ -522,18 +528,23 @@ impl OpenAIClient {
     /// let client = OpenAIClient::new(config).unwrap();
     /// ```
     pub fn new(config: ClientConfig) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(config.timeout)
+        let builder = || {
+            Client::builder()
+                .timeout(config.timeout)
+                .tcp_keepalive(Duration::from_secs(60)) // TCP keep-alive every 60 seconds
+                .http2_keep_alive_interval(Duration::from_secs(30)) // HTTP/2 keep-alive
+                .http2_keep_alive_timeout(Duration::from_secs(20))
+                .http2_keep_alive_while_idle(true) // Send keep-alive even when idle
+        };
+        let client = builder()
             .pool_max_idle_per_host(config.pool_size) // Match concurrency for optimal connection reuse
             .pool_idle_timeout(config.pool_idle_timeout)
-            .tcp_keepalive(Duration::from_secs(60)) // TCP keep-alive every 60 seconds
-            .http2_keep_alive_interval(Duration::from_secs(30)) // HTTP/2 keep-alive
-            .http2_keep_alive_timeout(Duration::from_secs(20))
-            .http2_keep_alive_while_idle(true) // Send keep-alive even when idle
             .build()?;
+        let unpooled = builder().pool_max_idle_per_host(0).build()?;
 
         Ok(Self {
             client,
+            unpooled,
             base_url: config.base_url,
             api_key: config.api_key,
             model: config.model,
@@ -547,6 +558,14 @@ impl OpenAIClient {
             chat_template_kwargs: config.chat_template_kwargs,
             ignore_eos: config.ignore_eos,
         })
+    }
+
+    fn http(&self, unpooled: bool) -> &Client {
+        if unpooled {
+            &self.unpooled
+        } else {
+            &self.client
+        }
     }
 
     pub async fn chat_completion(
@@ -731,7 +750,10 @@ impl OpenAIClient {
         let mut connection_retries_used = 0;
 
         loop {
-            match self.post_json(url, request).await {
+            match self
+                .post_json(url, request, connection_retries_used > 0)
+                .await
+            {
                 Ok(resp) => {
                     if attempt > 0 {
                         log::debug!("Request succeeded after {} retries", attempt);
@@ -778,13 +800,14 @@ impl OpenAIClient {
         }
     }
 
-    /// Single non-streaming POST (without retry logic).
-    async fn post_json<Req, Resp>(&self, url: &str, request: &Req) -> Result<Resp>
+    /// Single non-streaming POST (without retry logic), on a new connection
+    /// when `unpooled` is set.
+    async fn post_json<Req, Resp>(&self, url: &str, request: &Req, unpooled: bool) -> Result<Resp>
     where
         Req: Serialize,
         Resp: DeserializeOwned,
     {
-        let mut req = self.client.post(url).json(request);
+        let mut req = self.http(unpooled).post(url).json(request);
 
         if let Some(api_key) = &self.api_key {
             req = req.header("Authorization", format!("Bearer {}", api_key));
@@ -937,7 +960,10 @@ impl OpenAIClient {
         let mut connection_retries_used = 0;
 
         loop {
-            match self.chat_completion_stream_internal(request.clone()).await {
+            match self
+                .chat_completion_stream_internal(request.clone(), connection_retries_used > 0)
+                .await
+            {
                 Ok(stream) => {
                     if attempt > 0 {
                         log::debug!("Request succeeded after {} retries", attempt);
@@ -990,10 +1016,12 @@ impl OpenAIClient {
         }
     }
 
-    /// Internal implementation of streaming request (without retry logic)
+    /// Internal implementation of streaming request (without retry logic), on a
+    /// new connection when `unpooled` is set.
     async fn chat_completion_stream_internal(
         &self,
         request: ChatCompletionRequest,
+        unpooled: bool,
     ) -> Result<StreamResponse> {
         let mut request = request;
         request.stream = Some(true);
@@ -1004,7 +1032,7 @@ impl OpenAIClient {
         let url = format!("{}/chat/completions", self.base_url);
 
         let mut req = self
-            .client
+            .http(unpooled)
             .post(&url)
             .json(&request)
             .header("Connection", "keep-alive"); // Ensure HTTP/1.1 keep-alive
@@ -1171,9 +1199,9 @@ enum RetryStep {
 /// request was written. In the second case the server may have received the
 /// request; the client cannot tell. A request sent on a pooled connection the
 /// server is closing fails this way without being read. Up to
-/// `connection_retries` such failures are retried at once, whatever
-/// `max_retries` is; after that a connection error is retried like any other
-/// retriable error.
+/// `connection_retries` such failures are retried at once, on a new
+/// connection, whatever `max_retries` is; after that a connection error is
+/// retried like any other retriable error.
 fn next_retry_step(
     error: &anyhow::Error,
     attempt: u32,
@@ -2433,6 +2461,143 @@ mod tests {
             "expected a connection error, got {err:?}"
         );
         assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A server that answers the first request on each connection with a
+    /// keep-alive response of `content_type` carrying `body`, and closes the
+    /// connection, unanswered, when a second request arrives on it. Every
+    /// pooled connection is then one the server will close, as with
+    /// llama-server v0.7.0, which closes each connection after a streamed
+    /// response. Returns its base URL and the number of connections it has
+    /// accepted.
+    async fn server_answering_once_per_connection(
+        content_type: &'static str,
+        body: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        async fn read_request(sock: &mut tokio::net::TcpStream) -> bool {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match sock.read(&mut chunk).await {
+                    Ok(0) | Err(_) => return false,
+                    Ok(k) => buf.extend_from_slice(&chunk[..k]),
+                }
+                let text = String::from_utf8_lossy(&buf);
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let len = text[..end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= end + 4 + len {
+                        return true;
+                    }
+                }
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(AtomicUsize::new(0));
+        let count = accepted.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                count.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    if !read_request(&mut sock).await {
+                        return;
+                    }
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    if sock.write_all(resp.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    // The second request on this connection is read and dropped.
+                    read_request(&mut sock).await;
+                });
+            }
+        });
+        (format!("http://{addr}/v1"), accepted)
+    }
+
+    #[tokio::test]
+    async fn a_connection_retry_is_not_sent_on_another_pooled_connection() {
+        let (url, accepted) =
+            server_answering_once_per_connection("text/event-stream", "data: [DONE]\n\n").await;
+        let mut client = retry_test_client(url, 1);
+        client.client = Client::builder()
+            .pool_max_idle_per_host(4)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        // Three concurrent requests leave three idle connections in the pool.
+        let warm = (0..3).map(|_| {
+            let client = &client;
+            async move {
+                let request = client.create_request("hi", Some(4), None, None);
+                let mut stream = client.chat_completion_stream(request).await.unwrap();
+                while stream.next_chunk().await.unwrap().is_some() {}
+            }
+        });
+        futures::future::join_all(warm).await;
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 3);
+        // Each request goes out on a pooled connection, which the server
+        // closes. Its connection retry must open a new connection, and must not
+        // reuse the one the previous retry opened.
+        for _ in 0..2 {
+            let request = client.create_request("hi", Some(4), None, None);
+            let result = client.chat_completion_stream(request).await;
+            assert!(
+                result.is_ok(),
+                "expected the connection retry to succeed: {:?}",
+                result.err()
+            );
+            let mut stream = result.unwrap();
+            while stream.next_chunk().await.unwrap().is_some() {}
+        }
+        // Three warm-up connections and one new connection per retry.
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn a_non_streaming_connection_retry_is_not_sent_on_another_pooled_connection() {
+        let body = r#"{"id":"x","object":"chat.completion","created":0,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+        let (url, accepted) = server_answering_once_per_connection("application/json", body).await;
+        let mut client = retry_test_client(url, 1);
+        client.client = Client::builder()
+            .pool_max_idle_per_host(4)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        // Three concurrent requests leave three idle connections in the pool.
+        let warm = (0..3).map(|_| {
+            let client = &client;
+            async move {
+                let request = client.create_request("hi", Some(4), None, None);
+                client.chat_completion(request).await.unwrap();
+            }
+        });
+        futures::future::join_all(warm).await;
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 3);
+        // This request goes out on a pooled connection, which the server closes.
+        // The connection retry must not go out on a second one.
+        let request = client.create_request("hi", Some(4), None, None);
+        let result = client.chat_completion(request).await;
+        assert!(
+            result.is_ok(),
+            "expected the connection retry to succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
