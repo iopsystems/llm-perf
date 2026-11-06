@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 
 ### Security
 
+- Bump arrow and parquet 56 -> 60, which removes thrift 0.17.0 (RUSTSEC-2026-0435). llm-perf now builds one arrow and one parquet, shared with the metriken stack.
 - Bump metriken-exposition 0.22.1 -> 0.23.2, metriken-storage 0.2.3 -> 0.3.2, metriken-recorder 0.1.1 -> 0.3.1 and dendro 0.4.2 -> 0.5.1, which move parquet 58 -> 60: zstd 0.13.3 -> 0.14.3 (RUSTSEC-2026-0391), zstd-safe 7.2.4 -> 8.2.0 (RUSTSEC-2026-0398, -0403), lru 0.12.5 -> 0.18.5 (RUSTSEC-2026-0002, -0253)
 
 ## [0.1.21] - 2026-10-29
