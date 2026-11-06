@@ -9,7 +9,7 @@
 //! file's metadata. The JSON is a
 //! Rezolus `ServiceExtension` (`crates/dashboard/src/service_extension.rs`
 //! in rezolus): a `service_name` and a list of KPIs, each with a `role`,
-//! `title`, `query`, `type` and optional `unit_system`.
+//! `title`, `query` and `type`, and an optional `unit_system` and `subtype`.
 //!
 //! This file is the source of truth for llm-perf's template. Rezolus keeps
 //! a copy in its built-in registry (`crates/dashboard/templates/
@@ -28,23 +28,6 @@ pub const SERVICE_QUERIES: &str = include_str!("../templates/llm-perf.json");
 mod tests {
     use super::*;
 
-    /// The unit systems the Rezolus viewer can scale: rezolus's
-    /// `dashboard::plot::Unit` (`crates/dashboard/src/plot.rs`). The viewer
-    /// scales a KPI only by one of these; with any other value it warns and
-    /// renders the KPI as a plain count, and `rezolus recording annotate`
-    /// refuses the template.
-    const UNIT_SYSTEMS: [&str; 9] = [
-        "time",
-        "bytes",
-        "bitrate",
-        "datarate",
-        "percentage",
-        "frequency",
-        "power",
-        "count",
-        "rate",
-    ];
-
     fn template() -> serde_json::Value {
         serde_json::from_str(SERVICE_QUERIES).expect("the template is JSON")
     }
@@ -61,13 +44,26 @@ mod tests {
             for key in ["role", "title", "query", "type"] {
                 assert!(kpi[key].is_string(), "KPI {kpi} has no string {key}");
             }
+            // The viewer scales a KPI only by a `metriken_charts::Unit`. Given
+            // any other `unit_system`, Rezolus 5.x shows the value unscaled
+            // with the system's name as its unit; from iopsystems/rezolus#1644
+            // the viewer drops the system and `rezolus recording annotate`
+            // refuses the template.
             if let Some(unit) = kpi.get("unit_system") {
                 let unit = unit.as_str().expect("unit_system is a string");
-                assert!(
-                    UNIT_SYSTEMS.contains(&unit),
-                    "KPI {} has unit_system {unit:?}, which the viewer does not know",
-                    kpi["title"]
-                );
+                if let Err(e) = unit.parse::<metriken_charts::Unit>() {
+                    panic!("KPI {}: {e}", kpi["title"]);
+                }
+            }
+            // The viewer draws a histogram KPI by the
+            // `metriken_charts::HistogramView` its subtype names, and draws
+            // percentiles for a subtype that names none, so a misspelled
+            // subtype changes the chart without an error.
+            if let Some(subtype) = kpi.get("subtype") {
+                let subtype = subtype.as_str().expect("subtype is a string");
+                if let Err(e) = subtype.parse::<metriken_charts::HistogramView>() {
+                    panic!("KPI {}: {e}", kpi["title"]);
+                }
             }
         }
     }
