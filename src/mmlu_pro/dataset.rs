@@ -165,3 +165,63 @@ pub async fn load_mmlu_pro(
 
     Ok((test_data, val_grouped))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int64Array, ListBuilder, RecordBatch, StringBuilder};
+    use parquet::arrow::ArrowWriter;
+    use parquet::basic::{Compression, GzipLevel, ZstdLevel};
+    use parquet::file::properties::WriterProperties;
+    use std::sync::Arc;
+
+    /// A one-row file in the MMLU-Pro schema, written with `compression`.
+    fn write_question(compression: Compression) -> tempfile::NamedTempFile {
+        let mut options = ListBuilder::new(StringBuilder::new());
+        options.values().append_value("4");
+        options.values().append_value("N/A");
+        options.values().append_value("5");
+        options.append(true);
+        let strings = |v: &str| Arc::new(StringArray::from(vec![v]));
+        let batch = RecordBatch::try_from_iter([
+            ("question_id", Arc::new(Int64Array::from(vec![7])) as _),
+            ("question", strings("2 + 2?") as _),
+            ("options", Arc::new(options.finish()) as _),
+            ("answer", strings("A") as _),
+            ("answer_index", Arc::new(Int64Array::from(vec![0])) as _),
+            ("cot_content", strings("") as _),
+            ("category", strings("math") as _),
+        ])
+        .unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let props = WriterProperties::builder()
+            .set_compression(compression)
+            .build();
+        let mut writer =
+            ArrowWriter::try_new(file.reopen().unwrap(), batch.schema(), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        file
+    }
+
+    /// parquet decodes a codec only when its feature is enabled. MMLU-Pro's
+    /// files are snappy-compressed.
+    #[test]
+    fn load_parquet_reads_compressed_files() {
+        for compression in [
+            Compression::SNAPPY,
+            Compression::GZIP(GzipLevel::default()),
+            Compression::ZSTD(ZstdLevel::default()),
+            Compression::LZ4_RAW,
+        ] {
+            let file = write_question(compression);
+            let questions = load_parquet(&file.path().to_path_buf())
+                .unwrap_or_else(|e| panic!("{compression:?}: {e}"));
+            assert_eq!(questions.len(), 1);
+            let q = &questions[0];
+            assert_eq!(q.question_id, 7);
+            assert_eq!(q.options, ["4", "5"]);
+            assert_eq!(q.category, "math");
+        }
+    }
+}

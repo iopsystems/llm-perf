@@ -1,6 +1,6 @@
 [package]
 name = "llm-perf"
-version = "0.1.22-alpha.4"
+version = "0.1.22-alpha.5"
 edition = "2024"
 authors = ["Brian Martin <brayniac@gmail.com>"]
 description = "A benchmarking tool for OpenAI-compatible LLM servers"
@@ -14,7 +14,7 @@ path = "src/main.rs"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.4", features = ["derive"] }
-arrow = { version = "56", default-features = false, features = ["prettyprint"] }
+arrow = { version = "60", default-features = false, features = ["prettyprint"] }
 fake = { version = "3.0", features = ["derive"] }
 futures = "0.3"
 hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls"] }
@@ -34,7 +34,10 @@ metriken-storage = { version = "0.3.2", default-features = false, features = ["c
 metriken-recorder = { version = "0.3.1", features = ["registry"] }
 libc = "0.2"
 num_cpus = "1.16"
-parquet = { version = "56", default-features = false, features = ["arrow"] }
+# Codecs for the downloaded dataset files (src/dataset.rs,
+# src/mmlu_pro/dataset.rs). MMLU-Pro and OpenOrca are snappy; gzip uses the
+# flate2 llm-perf already depends on.
+parquet = { version = "60", default-features = false, features = ["arrow", "snap", "flate2-rust_backend", "zstd", "lz4"] }
 rand = "0.8"
 regex = "1"
 rand_distr = "0.4"
