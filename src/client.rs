@@ -2468,12 +2468,16 @@ mod tests {
     /// connection, unanswered, when a second request arrives on it. Every
     /// pooled connection is then one the server will close, as with
     /// llama-server v0.7.0, which closes each connection after a streamed
-    /// response. Returns its base URL and the number of connections it has
-    /// accepted.
+    /// response. Returns its base URL, the number of connections it has
+    /// accepted, and the number of connections it closed on a second request.
     async fn server_answering_once_per_connection(
         content_type: &'static str,
         body: &'static str,
-    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         async fn read_request(sock: &mut tokio::net::TcpStream) -> bool {
@@ -2504,12 +2508,15 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let accepted = std::sync::Arc::new(AtomicUsize::new(0));
         let count = accepted.clone();
+        let refused = std::sync::Arc::new(AtomicUsize::new(0));
+        let refused_count = refused.clone();
         tokio::spawn(async move {
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else {
                     return;
                 };
                 count.fetch_add(1, Ordering::SeqCst);
+                let refused_count = refused_count.clone();
                 tokio::spawn(async move {
                     if !read_request(&mut sock).await {
                         return;
@@ -2523,16 +2530,18 @@ mod tests {
                         return;
                     }
                     // The second request on this connection is read and dropped.
-                    read_request(&mut sock).await;
+                    if read_request(&mut sock).await {
+                        refused_count.fetch_add(1, Ordering::SeqCst);
+                    }
                 });
             }
         });
-        (format!("http://{addr}/v1"), accepted)
+        (format!("http://{addr}/v1"), accepted, refused)
     }
 
     #[tokio::test]
     async fn a_connection_retry_is_not_sent_on_another_pooled_connection() {
-        let (url, accepted) =
+        let (url, accepted, refused) =
             server_answering_once_per_connection("text/event-stream", "data: [DONE]\n\n").await;
         let mut client = retry_test_client(url, 1);
         client.client = Client::builder()
@@ -2567,12 +2576,15 @@ mod tests {
         }
         // Three warm-up connections and one new connection per retry.
         assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 5);
+        // Each first attempt went out on a pooled connection.
+        assert_eq!(refused.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
     async fn a_non_streaming_connection_retry_is_not_sent_on_another_pooled_connection() {
         let body = r#"{"id":"x","object":"chat.completion","created":0,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
-        let (url, accepted) = server_answering_once_per_connection("application/json", body).await;
+        let (url, accepted, refused) =
+            server_answering_once_per_connection("application/json", body).await;
         let mut client = retry_test_client(url, 1);
         client.client = Client::builder()
             .pool_max_idle_per_host(4)
@@ -2598,6 +2610,8 @@ mod tests {
             "expected the connection retry to succeed: {:?}",
             result.err()
         );
+        // The first attempt went out on a pooled connection.
+        assert_eq!(refused.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
