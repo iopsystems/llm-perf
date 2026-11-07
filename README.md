@@ -393,7 +393,7 @@ model = "llama-3.1-8b"                  # Model name (omit to auto-detect)
 timeout = 60                             # Request timeout in seconds
 # api_key = "optional-api-key"          # If authentication required
 # max_retries = 3                       # Backoff retries for failed requests (0 = none)
-# connection_retries = 1                # Immediate resends after a connection error before response headers (0 = off)
+# connection_retries = 1                # Immediate resends on a new connection after a connection error before response headers (0 = off)
 
 [load]
 concurrent_requests = 10                 # Parallel workers (also max in-flight for QPS mode)

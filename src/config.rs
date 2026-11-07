@@ -94,7 +94,8 @@ pub struct EndpointConfig {
     /// Immediate retries for a request whose send fails with a connection
     /// error before response headers arrive, counted apart from `max_retries`.
     /// A request sent on a pooled connection the server is closing fails this
-    /// way without being read. 0 turns this off.
+    /// way without being read. Each retry opens a new connection. 0 turns this
+    /// off.
     #[serde(default = "default_connection_retries")]
     pub connection_retries: u32,
     #[serde(default = "default_retry_initial_delay_ms")]
