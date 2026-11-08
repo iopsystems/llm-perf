@@ -996,6 +996,7 @@ impl BenchmarkRunner {
                         workload,
                         idx,
                         true,
+                        None,
                         default_max_tokens,
                         bust_prefix_str,
                         expected_hit,
@@ -1073,6 +1074,7 @@ impl BenchmarkRunner {
                             workload,
                             idx,
                             false,
+                            None,
                             default_max_tokens,
                             bust_prefix_str,
                             expected_hit,
@@ -1148,6 +1150,7 @@ impl BenchmarkRunner {
                                 workload,
                                 idx,
                                 true,
+                                Some(warmup_deadline),
                                 default_max_tokens,
                                 bust_prefix_str,
                                 expected_hit,
@@ -1164,10 +1167,11 @@ impl BenchmarkRunner {
                     warmup_handles.push(handle);
                 }
 
-                // Wait for warmup to complete, then cancel any in-flight requests
+                // Workers start no request after the deadline. Wait for the
+                // requests in flight at the deadline to finish, so the main
+                // test does not start while the server is still serving them.
                 sleep(warmup_dur).await;
                 for handle in warmup_handles {
-                    handle.abort();
                     let _ = handle.await;
                 }
 
@@ -1254,6 +1258,7 @@ impl BenchmarkRunner {
                             workload,
                             idx,
                             false,
+                            None,
                             default_max_tokens,
                             bust_prefix_str,
                             expected_hit,
@@ -1432,6 +1437,7 @@ impl BenchmarkRunner {
                             workload,
                             idx,
                             true,
+                            Some(warmup_deadline),
                             default_max_tokens,
                             bust_prefix_str,
                             expected_hit,
@@ -1447,9 +1453,10 @@ impl BenchmarkRunner {
                 warmup_handles.push(handle);
             }
 
+            // Wait for the requests in flight at the deadline to finish, as in
+            // concurrent mode.
             sleep(warmup_dur).await;
             for handle in warmup_handles {
-                handle.abort();
                 let _ = handle.await;
             }
             info!("Warmup complete, starting saturation search");
@@ -1525,6 +1532,7 @@ impl BenchmarkRunner {
                         workload,
                         idx,
                         false,
+                        None,
                         default_max_tokens,
                         bust_prefix_str,
                         expected_hit,
@@ -1720,6 +1728,7 @@ impl BenchmarkRunner {
                         workload,
                         idx,
                         true,
+                        None,
                         default_max_tokens,
                         bust_prefix_str,
                         expected_hit,
@@ -1754,6 +1763,9 @@ impl BenchmarkRunner {
                 let workload_idx = idx % workloads.len();
                 tokio::time::sleep(distribution.next_delay()).await;
                 let arrival = Instant::now();
+                if arrival >= warmup_deadline {
+                    break;
+                }
 
                 let client = Arc::clone(&self.client);
                 let tokenizer = Arc::clone(&self.tokenizer);
@@ -1788,6 +1800,10 @@ impl BenchmarkRunner {
                         .acquire()
                         .await
                         .expect("semaphore should never be closed");
+                    // An arrival still queued at the deadline is not sent.
+                    if Instant::now() >= warmup_deadline {
+                        return Ok(());
+                    }
                     let result = Self::execute_workload(
                         &system_prompt_closure,
                         client.clone(),
@@ -1795,6 +1811,7 @@ impl BenchmarkRunner {
                         workload,
                         idx,
                         true,
+                        Some(warmup_deadline),
                         default_max_tokens,
                         bust_prefix_str,
                         expected_hit,
@@ -1809,9 +1826,9 @@ impl BenchmarkRunner {
                 handles.push(handle);
             }
 
-            // Cancel any in-flight warmup requests past the deadline
+            // Wait for the requests in flight at the deadline to finish, as in
+            // concurrent mode.
             for handle in handles.drain(..) {
-                handle.abort();
                 let _ = handle.await;
             }
 
@@ -1937,6 +1954,7 @@ impl BenchmarkRunner {
                         workload,
                         idx,
                         false,
+                        None,
                         default_max_tokens,
                         bust_prefix_str,
                         expected_hit,
@@ -1967,6 +1985,7 @@ impl BenchmarkRunner {
                         workload,
                         idx,
                         false,
+                        None,
                         default_max_tokens,
                         bust_prefix_str,
                         expected_hit,
@@ -2070,6 +2089,7 @@ impl BenchmarkRunner {
         workload: &Workload,
         index: usize,
         is_warmup: bool,
+        turn_deadline: Option<Instant>,
         default_max_tokens: Option<u32>,
         bust_prefix: String,
         expected_hit: bool,
@@ -2110,6 +2130,7 @@ impl BenchmarkRunner {
                     conversation,
                     index,
                     is_warmup,
+                    turn_deadline,
                     default_max_tokens,
                     bust_prefix,
                     expected_hit,
@@ -2129,6 +2150,7 @@ impl BenchmarkRunner {
         conversation: Conversation,
         index: usize,
         is_warmup: bool,
+        turn_deadline: Option<Instant>,
         default_max_tokens: Option<u32>,
         bust_prefix: String,
         expected_hit: bool,
@@ -2177,6 +2199,11 @@ impl BenchmarkRunner {
         let total_turns = conversation.user_turns.len();
 
         for (turn_idx, user_turn) in conversation.user_turns.iter().enumerate() {
+            // A warmup conversation starts no turn after the warmup deadline; the
+            // turn in flight at the deadline runs to completion.
+            if turn_idx > 0 && turn_deadline.is_some_and(|d| Instant::now() >= d) {
+                break;
+            }
             // Prepend bust_prefix only to the first user message to prevent
             // cross-conversation cache hits while allowing prefix caching within
             // the conversation
@@ -2346,6 +2373,12 @@ impl BenchmarkRunner {
                 && turn_idx + 1 < total_turns
             {
                 let delay = sampler.sample();
+                // A warmup conversation sleeps no later than the deadline; the
+                // check at the top of the loop then ends it.
+                let delay = match turn_deadline {
+                    Some(d) => delay.min(d.saturating_duration_since(Instant::now())),
+                    None => delay,
+                };
                 if !delay.is_zero() {
                     tokio::time::sleep(delay).await;
                 }
