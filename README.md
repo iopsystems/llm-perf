@@ -401,7 +401,7 @@ total_requests = 100                     # Total requests to send
 # qps = 5.0                              # Set to enable fixed QPS mode
 # duration_seconds = 60                  # OR: Run for N seconds
 # warmup_requests = 10                   # Warmup requests (excluded from metrics)
-# warmup_duration = 5                    # OR: Warmup duration in seconds
+# warmup_duration = 5                    # OR: Warmup duration in seconds; requests in flight at the end finish first
 
 [input]
 file = "prompts.jsonl"                  # Input prompts file
