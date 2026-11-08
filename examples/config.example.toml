@@ -152,7 +152,11 @@ total_requests = 100
 # Number of warmup requests to send before main test
 # warmup_requests = 10
 
-# OR: Warmup duration in seconds
+# OR: Warmup duration in seconds. No new request starts after the deadline (a
+# retry of one in flight can), and the requests in flight then run to
+# completion before the main test starts.
+# A conversation in flight starts no further turn, and a think delay between
+# its turns ends at the deadline.
 # warmup_duration = 5
 
 # =============================================================================
