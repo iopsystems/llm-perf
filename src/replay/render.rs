@@ -167,12 +167,24 @@ pub mod fake {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
+    /// Tokenizes on spaces, a leading space joining the word after it (as
+    /// BPE tokenizers do), and renders each message as `<role>`, its content
+    /// and `<end>`. The default trims content when rendering;
+    /// `untrimmed()` renders it as is, as some chat templates do.
     #[derive(Default)]
     pub struct FakeRenderer {
         vocab: Mutex<(HashMap<String, u32>, Vec<String>)>,
+        untrimmed: bool,
     }
 
     impl FakeRenderer {
+        pub fn untrimmed() -> Self {
+            Self {
+                untrimmed: true,
+                ..Self::default()
+            }
+        }
+
         fn intern(&self, piece: &str) -> u32 {
             let mut v = self.vocab.lock().unwrap();
             if let Some(id) = v.0.get(piece) {
@@ -212,7 +224,12 @@ pub mod fake {
             let mut out = vec![self.intern("<bos>")];
             for m in messages {
                 out.push(self.intern(&format!("<{}>", m.role)));
-                out.extend(self.tokens(m.content.trim()));
+                let content = if self.untrimmed {
+                    m.content.as_str()
+                } else {
+                    m.content.trim()
+                };
+                out.extend(self.tokens(content));
                 out.push(self.intern("<end>"));
             }
             out.push(self.intern("<assistant>"));

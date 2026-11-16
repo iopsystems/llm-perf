@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- Trace replay: each call in the per-call log has `shared_tokens`, the leading tokens its rendered prompt shares with the previous call's rendered prompt and reply (null when building the prompt failed). It can exceed `reuse - shortfall` by template tokens that follow the cut, such as a role tag or a system message kept whole, and fall below it for a prompt built correctly when the chat template's generation prompt ends with tokens its rendering of that assistant turn in history does not repeat, such as a thinking tag; `calls_render_mismatch`, which compares token counts, does not show how much of the reuse the prompt carried.
+  - Library: `replay::prompt::BuiltCall` and `replay::runner::CallRecord` have a new field, `shared_tokens`; a struct literal must set it.
+
+### Bug Fixes
+
+- Trace replay against a model whose chat template renders message content as is, without trimming it (GLM-5.3-Flash's does; Qwen3.5's trims it), sent less of the reuse the trace asks for, in every release with trace replay (0.1.19 to 0.1.22). Replay searched the rendered prompt for each message's trimmed tokens, which such a template does not contain when the content starts with whitespace, and filler words, which make up the user messages, start with a space. No user message was found, so a call that reused part of a user message was rebuilt from the last assistant message before it, or from nothing, with new filler. In a simulation of replay's prompt building with GLM-5.3-Flash's template and tokenizer over one hour of a coding-assistant trace, calls shared 69.4% of their prompt tokens with the previous call against the 86.1% the trace asks for within the previous prompt, about four fifths of it. Replay now searches for the untrimmed tokens when the trimmed ones are not found. Against a template that trims content, prompts are byte-identical to before.
+
 ## [0.1.22] - 2026-11-08
 
 ### Features
