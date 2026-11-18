@@ -57,6 +57,11 @@ pub struct CallRecord {
     pub reuse: u64,
     pub reuse_inferred: bool,
     pub shortfall: u64,
+    /// Leading tokens the rendered prompt shares with the previous call's
+    /// rendered prompt followed by the tokenized reply; `None` when building
+    /// the prompt failed. See `BuiltCall::shared_tokens` for why it can be
+    /// above or below `reuse - shortfall` for a prompt built correctly.
+    pub shared_tokens: Option<u64>,
     pub cached_tokens: Option<u64>,
     pub max_tokens: u32,
     pub completion_tokens: Option<u64>,
@@ -599,6 +604,7 @@ async fn run_session(sh: Arc<Shared>, s: TraceSession, offset: Duration) -> Outc
                 reuse: c.reuse,
                 reuse_inferred: c.reuse_inferred,
                 shortfall: 0,
+                shared_tokens: None,
                 cached_tokens: None,
                 max_tokens: c.completion.clamp(1, u32::MAX as u64) as u32,
                 completion_tokens: None,
@@ -638,6 +644,7 @@ async fn run_session(sh: Arc<Shared>, s: TraceSession, offset: Duration) -> Outc
                 );
             }
             record.shortfall = built.shortfall as u64;
+            record.shared_tokens = Some(built.shared_tokens as u64);
             record.overshoot = built.overshoot;
 
             if !wait_until(sh.deadline, &sh.stop, session_t0 + slots[i].offset).await {
@@ -841,6 +848,7 @@ mod tests {
             reuse: 50,
             reuse_inferred: false,
             shortfall: 0,
+            shared_tokens: None,
             cached_tokens: cached,
             max_tokens: 10,
             completion_tokens: Some(10),

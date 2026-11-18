@@ -257,6 +257,19 @@ The per-call log (`replay.log`) records, among other fields:
 - `shortfall`: requested reuse beyond the previous rendered prompt plus the
   tokenized reply; a token or two when re-tokenizing the reply gives fewer
   tokens than were generated, more when the server stopped early
+- `shared_tokens`: the leading tokens the rendered prompt shares with the
+  previous call's rendered prompt followed by the tokenized reply, or null
+  when building the prompt failed. It can exceed `reuse - shortfall` by
+  template tokens that follow the cut, such as a role tag or a system message
+  kept whole. It can be less for a prompt built correctly, in two cases.
+  When the chat template's generation prompt ends with tokens that the
+  previous reply as rendered in history does not repeat (an opening thinking
+  tag, or a closed empty thinking block), the shared prefix stops at, or a
+  few tokens before, the end of the previous prompt; the server cannot serve
+  those tokens from cache either. When the cut falls on the template tokens
+  after a user message (for example, reuse equal to the previous prompt's
+  length), replay keeps that message whole and adds filler to it, so the
+  shared prefix ends where the message's content ends
 
 The summary counts calls whose `prompt_tokens` differ from `rendered_tokens`
 (`calls_render_mismatch`) and records the largest difference

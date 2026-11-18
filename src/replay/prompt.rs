@@ -5,7 +5,7 @@
 //! tokens of call `n-1`'s rendered prompt followed by the tokenized reply,
 //! then filler brings the rendered prompt to `prompt` tokens. Positions are
 //! found in rendered tokens, because chat templates add tokens around each
-//! message and trim message content.
+//! message, and some trim message content while others render it as is.
 
 use super::filler::FillerPool;
 use super::render::Renderer;
@@ -17,13 +17,46 @@ use rand::rngs::StdRng;
 /// content in a rendered prompt; covers role headers and template preambles.
 const LOCATE_WINDOW: usize = 256;
 
-/// A message, the tokens of its trimmed content, and where that content
-/// starts in the rendered prompt it was last sent in (`None` if not found).
+/// A message, the tokens of its content as they appear in the rendered
+/// prompt, and where that content starts in the rendered prompt it was last
+/// sent in (`None` if not found).
+///
+/// `tokens` starts as the trimmed content. A template that renders content as
+/// is, with no trim between the role tag and the content, does not contain
+/// those tokens when the content has leading whitespace: ` word` and `word`
+/// tokenize differently, and filler words all start with a space.
+/// For such content `untrimmed` holds the tokens of the content as is, and
+/// `locate` uses them when the trimmed tokens are not found, so a user or
+/// system message stays a usable cut point under either kind of template.
+/// A reply keeps only its trimmed tokens.
 #[derive(Debug, Clone)]
 struct Segment {
     msg: Message,
     tokens: Vec<u32>,
+    /// Tokens of the untrimmed content, when it differs from the trimmed
+    /// content and the segment has not been located yet.
+    untrimmed: Option<Vec<u32>>,
     start: Option<usize>,
+}
+
+impl Segment {
+    /// A segment for `msg` that has not been located: trimmed content tokens,
+    /// and the untrimmed ones when the content has surrounding whitespace.
+    async fn unlocated<R: Renderer>(renderer: &R, msg: Message) -> Result<Self> {
+        let trimmed = msg.content.trim();
+        let tokens = renderer.tokenize(trimmed).await?;
+        let untrimmed = if trimmed.len() == msg.content.len() {
+            None
+        } else {
+            Some(renderer.tokenize(&msg.content).await?)
+        };
+        Ok(Self {
+            msg,
+            tokens,
+            untrimmed,
+            start: None,
+        })
+    }
 }
 
 /// One call's messages and how they relate to the previous call.
@@ -38,6 +71,18 @@ pub struct BuiltCall {
     /// The rendered prompt is longer than requested, because the kept part
     /// plus the smallest addition already exceeds it.
     pub overshoot: bool,
+    /// Leading tokens the rendered prompt shares with the previous rendered
+    /// prompt followed by the tokenized reply. It can exceed the requested
+    /// reuse less `shortfall` by template tokens that follow the cut, such as
+    /// a role tag or a system message kept whole. It can be less for a prompt
+    /// built correctly, in two cases. A template whose generation prompt ends
+    /// with tokens that the previous reply as rendered in history does not
+    /// repeat (an opening thinking tag, or a closed empty thinking block)
+    /// stops the shared prefix at, or a few tokens before, the end of the
+    /// previous prompt. A cut on the template tokens after a user message
+    /// keeps that message whole and adds filler to it, so the shared prefix
+    /// ends where the message's content ends.
+    pub shared_tokens: usize,
 }
 
 /// The state a session carries from one call to the next.
@@ -78,14 +123,7 @@ impl SessionPrompt {
             if kept.first().is_some_and(|s| s.msg.role == "system") {
                 kept.remove(0);
             }
-            kept.insert(
-                0,
-                Segment {
-                    msg: sys.clone(),
-                    tokens: renderer.tokenize(sys.content.trim()).await?,
-                    start: None,
-                },
-            );
+            kept.insert(0, Segment::unlocated(renderer, sys.clone()).await?);
         }
 
         // Filler goes on the end of a trailing user message, or in a new one.
@@ -125,26 +163,34 @@ impl SessionPrompt {
         }
 
         // Content tokens: reused for whole kept messages that were located in
-        // the previous prompt, re-tokenized otherwise.
+        // the previous prompt (in the form that was found), re-tokenized
+        // otherwise.
         let mut segments = Vec::with_capacity(messages.len());
         for (i, msg) in messages.iter().enumerate() {
-            let tokens = match kept.get(i) {
-                Some(s) if s.msg.content == msg.content && s.start.is_some() => s.tokens.clone(),
-                _ => renderer.tokenize(msg.content.trim()).await?,
-            };
-            segments.push(Segment {
-                msg: msg.clone(),
-                tokens,
-                start: None,
+            segments.push(match kept.get(i) {
+                Some(s) if s.msg.content == msg.content && s.start.is_some() => Segment {
+                    msg: msg.clone(),
+                    tokens: s.tokens.clone(),
+                    untrimmed: None,
+                    start: None,
+                },
+                _ => Segment::unlocated(renderer, msg.clone()).await?,
             });
         }
         locate(&rendered, &mut segments);
 
+        let reference = self.rendered.iter().chain(self.reply_tokens.iter());
+        let shared_tokens = rendered
+            .iter()
+            .zip(reference)
+            .take_while(|(a, b)| a == b)
+            .count();
         let built = BuiltCall {
             messages,
             prompt_tokens: rendered.len(),
             shortfall,
             overshoot: rendered.len() > prompt,
+            shared_tokens,
         };
         self.segments = segments;
         self.rendered = rendered;
@@ -163,6 +209,7 @@ impl SessionPrompt {
                 content,
             },
             tokens,
+            untrimmed: None,
             start: Some(self.rendered.len()),
         });
         Ok(())
@@ -205,6 +252,7 @@ impl SessionPrompt {
                     content,
                 },
                 tokens: tokens[..k].to_vec(),
+                untrimmed: None,
                 start: None,
             });
         }
@@ -213,16 +261,30 @@ impl SessionPrompt {
 }
 
 /// Find each segment's content in `rendered`, in order, searching up to
-/// `LOCATE_WINDOW` tokens past the previous segment's content.
+/// `LOCATE_WINDOW` tokens past the previous segment's content: the trimmed
+/// tokens first, then the untrimmed ones. When the untrimmed tokens are the
+/// ones found they replace `tokens`, because `cut` measures positions inside
+/// a message in `tokens`.
 fn locate(rendered: &[u32], segments: &mut [Segment]) {
+    let find = |cursor: usize, tokens: &[u32]| {
+        let n = tokens.len();
+        let last = (cursor + LOCATE_WINDOW).min(rendered.len().saturating_sub(n));
+        (cursor..=last).find(|&p| rendered.get(p..p + n) == Some(tokens))
+    };
     let mut cursor = 0;
     for s in segments.iter_mut() {
-        let n = s.tokens.len();
-        let last = (cursor + LOCATE_WINDOW).min(rendered.len().saturating_sub(n));
-        s.start = (cursor..=last).find(|&p| rendered.get(p..p + n) == Some(&s.tokens[..]));
+        s.start = find(cursor, &s.tokens);
+        if let Some(untrimmed) = s.untrimmed.take()
+            && s.start.is_none()
+        {
+            s.start = find(cursor, &untrimmed);
+            if s.start.is_some() {
+                s.tokens = untrimmed;
+            }
+        }
         // After a miss, assume the content sat at the cursor, so one miss
         // does not move the window away from every later message.
-        cursor = s.start.unwrap_or(cursor) + n;
+        cursor = s.start.unwrap_or(cursor) + s.tokens.len();
     }
 }
 
@@ -303,6 +365,48 @@ mod tests {
         assert_eq!(b.messages.len(), 1);
         assert_eq!(shared(&r, &reference, &b).await, 7);
         assert_eq!(b.prompt_tokens, 20);
+    }
+
+    #[tokio::test]
+    async fn user_content_is_located_when_the_template_does_not_trim() {
+        // Filler words start with a space, so a template that renders content
+        // as is puts ` w1` after `<user>`, where the trimmed content has `w1`.
+        let r = FakeRenderer::untrimmed();
+        let mut s = SessionPrompt::default();
+        first(&r, &mut s, 14).await;
+        assert_eq!(s.segments[0].start, Some(2));
+    }
+
+    #[tokio::test]
+    async fn cut_inside_a_user_message_keeps_the_reuse_when_the_template_does_not_trim() {
+        let r = FakeRenderer::untrimmed();
+        let mut s = SessionPrompt::default();
+        first(&r, &mut s, 14).await;
+        s.record_reply(&r, "r1 r2 r3".to_string()).await.unwrap();
+        let reference = reference_of(&s);
+        let b = s
+            .build(&r, None, 7, 20, &pool(), &mut call_rng(1, "s", 1))
+            .await
+            .unwrap();
+        assert_eq!(shared(&r, &reference, &b).await, 7);
+        assert_eq!(b.shared_tokens, 7);
+        assert_eq!(b.prompt_tokens, 20);
+    }
+
+    #[tokio::test]
+    async fn shared_tokens_reports_the_prefix_the_prompt_carries() {
+        let r = FakeRenderer::default();
+        let mut s = SessionPrompt::default();
+        let b = first(&r, &mut s, 14).await;
+        assert_eq!(b.shared_tokens, 0);
+        s.record_reply(&r, "r1 r2 r3".to_string()).await.unwrap();
+        let reference = reference_of(&s);
+        let b = s
+            .build(&r, None, 15, 25, &pool(), &mut call_rng(1, "s", 1))
+            .await
+            .unwrap();
+        assert_eq!(b.shared_tokens, shared(&r, &reference, &b).await);
+        assert_eq!(b.shared_tokens, 15);
     }
 
     #[tokio::test]
