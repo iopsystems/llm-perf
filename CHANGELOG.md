@@ -15,7 +15,7 @@ All notable changes to this project will be documented in this file.
 
 ### Security
 
-- Bump quinn-udp 0.5.14 -> 0.5.16 (RUSTSEC-2026-0538)
+- Bump quinn-udp 0.5.14 -> 0.5.16 (RUSTSEC-2026-0538) (#213)
 
 ## [0.1.22] - 2026-11-08
 
