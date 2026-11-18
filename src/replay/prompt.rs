@@ -75,12 +75,13 @@ pub struct BuiltCall {
     /// prompt followed by the tokenized reply. It can exceed the requested
     /// reuse less `shortfall` by template tokens that follow the cut, such as
     /// a role tag or a system message kept whole. It can be less for a prompt
-    /// built correctly: a template whose generation prompt ends with tokens
-    /// that its rendering of the same assistant turn in history does not
+    /// built correctly, in two cases. A template whose generation prompt ends
+    /// with tokens that the previous reply as rendered in history does not
     /// repeat (an opening thinking tag, or a closed empty thinking block)
     /// stops the shared prefix at, or a few tokens before, the end of the
-    /// previous prompt; and a cut that keeps a user message whole stops it at
-    /// the end of that message's content.
+    /// previous prompt. A cut on the template tokens after a user message
+    /// keeps that message whole and adds filler to it, so the shared prefix
+    /// ends where the message's content ends.
     pub shared_tokens: usize,
 }
 

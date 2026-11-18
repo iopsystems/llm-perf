@@ -159,8 +159,8 @@ impl Renderer for ServerRenderer {
 }
 
 /// A word-level tokenizer and chat template for tests. Each space-prefixed
-/// word is one token; the template trims message content and wraps each
-/// message in role and end tokens, as the Llama 3.1 template does.
+/// word is one token; the template wraps each message in role and end tokens,
+/// and trims message content unless built with `FakeRenderer::untrimmed()`.
 #[cfg(test)]
 pub mod fake {
     use super::*;
