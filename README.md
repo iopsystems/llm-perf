@@ -262,12 +262,11 @@ The per-call log (`replay.log`) records, among other fields:
   when building the prompt failed. It can exceed `reuse - shortfall` by
   template tokens that follow the cut, such as a role tag or a system message
   kept whole. It can be less for a prompt built correctly: when the chat
-  template's generation
-  prompt ends with tokens that the rendering of that assistant turn in
-  history does not repeat (an opening thinking tag, or a closed empty
-  thinking block), the shared prefix stops at, or a few tokens before, the
-  end of the previous prompt, and the server cannot serve those tokens from
-  cache either
+  template's generation prompt ends with tokens that the rendering of that
+  assistant turn in history does not repeat (an opening thinking tag, or a
+  closed empty thinking block), the shared prefix stops at, or a few tokens
+  before, the end of the previous prompt, and the server cannot serve those
+  tokens from cache either
 
 The summary counts calls whose `prompt_tokens` differ from `rendered_tokens`
 (`calls_render_mismatch`) and records the largest difference
