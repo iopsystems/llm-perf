@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-11-18
+
 ### Features
 
 - Trace replay: each call in the per-call log has `shared_tokens`, the leading tokens its rendered prompt shares with the previous call's rendered prompt and reply (null when building the prompt failed). It can exceed `reuse - shortfall` by template tokens that follow the cut, such as a role tag or a system message kept whole. It can fall below it for a prompt built correctly in two cases. When the chat template's generation prompt ends with tokens that the previous reply as rendered in history does not repeat, such as a thinking tag, the shared prefix stops at or a few tokens before the end of the previous prompt. When the cut falls on the template tokens after a user message (for example, reuse equal to the previous prompt's length), replay keeps that message whole and adds filler to it, so the shared prefix ends where the message's content ends. `calls_render_mismatch`, which compares token counts, does not show how much of the reuse the prompt carried. (#212)
@@ -15,7 +17,7 @@ All notable changes to this project will be documented in this file.
 
 ### Security
 
-- Bump quinn-udp 0.5.14 -> 0.5.16 (RUSTSEC-2026-0538) (#213)
+- Bump quinn-udp 0.5.14 -> 0.5.16 (RUSTSEC-2026-0538). quinn-udp was not compiled into llm-perf (it comes through reqwest's optional `quinn` dependency, which no enabled feature uses); the bump clears the `cargo audit` finding. (#213)
 
 ## [0.1.22] - 2026-11-08
 
